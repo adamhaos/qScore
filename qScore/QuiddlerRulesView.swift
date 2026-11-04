@@ -4,20 +4,12 @@ struct QuiddlerRulesView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onDone: (() -> Void)?
-    /// Index into `slots`. Slots 0 and 5 are copies of the last and first
-    /// guide so swiping wraps around; once scrolling stops on a copy we jump,
-    /// without animation, to the real page showing the same guide.
-    @State private var scrolledSlot: Int? = 1
+    @State private var currentPage = 0
 
     private static let pageCount = 4
-    private let slots = [3, 0, 1, 2, 3, 0]
 
     init(onDone: (() -> Void)? = nil) {
         self.onDone = onDone
-    }
-
-    private var currentPage: Int {
-        slots[scrolledSlot ?? 1]
     }
 
     var body: some View {
@@ -25,65 +17,31 @@ struct QuiddlerRulesView: View {
             QuiddlerRulesHeader(onDone: close)
                 .padding(.horizontal)
 
-            ScrollView(.horizontal) {
-                HStack(spacing: 0) {
-                    ForEach(slots.indices, id: \.self) { slot in
-                        page(slots[slot])
-                            .containerRelativeFrame(.horizontal)
-                            .id(slot)
-                    }
-                }
-                .scrollTargetLayout()
+            TabView(selection: $currentPage) {
+                QuiddlerBasicsPage()
+                    .padding(.horizontal)
+                    .tag(0)
+                QuiddlerWordsPage()
+                    .padding(.horizontal)
+                    .tag(1)
+                QuiddlerGoingOutPage()
+                    .padding(.horizontal)
+                    .tag(2)
+                QuiddlerScoringPage()
+                    .padding(.horizontal)
+                    .tag(3)
             }
-            .scrollTargetBehavior(.paging)
-            .scrollIndicators(.hidden)
-            .scrollPosition(id: $scrolledSlot)
-            .onScrollPhaseChange { _, newPhase in
-                guard newPhase == .idle else { return }
-                wrapIfNeeded()
-            }
-            .onAppear {
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) { scrolledSlot = 1 }
-            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
 
             QuiddlerPageIndicator(pageCount: Self.pageCount, currentPage: currentPage) { page in
                 withAnimation(reduceMotion ? nil : QMotion.smooth) {
-                    scrolledSlot = page + 1
+                    currentPage = page
                 }
             }
             .padding(.bottom, 26)
         }
         .padding(.top, 8)
         .sensoryFeedback(.selection, trigger: currentPage)
-    }
-
-    @ViewBuilder
-    private func page(_ index: Int) -> some View {
-        Group {
-            switch index {
-            case 0: QuiddlerBasicsPage()
-            case 1: QuiddlerWordsPage()
-            case 2: QuiddlerGoingOutPage()
-            default: QuiddlerScoringPage()
-            }
-        }
-        .padding(.horizontal)
-    }
-
-    private func wrapIfNeeded() {
-        let target: Int
-        switch scrolledSlot ?? 1 {
-        case 0: target = slots.count - 2
-        case slots.count - 1: target = 1
-        default: return
-        }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            scrolledSlot = target
-        }
     }
 
     private func close() {
