@@ -420,11 +420,13 @@ private struct ScoreKeypad: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 ForEach(RoundBonus.allCases) { bonus in
                     bonusChip(bonus)
                 }
             }
+            // Keep the labels clear of the popover's rounded top corners.
+            .padding(.top, 6)
 
             ForEach(rows, id: \.self) { row in
                 HStack(spacing: 8) {
@@ -475,8 +477,8 @@ private struct ScoreKeypad: View {
                 .minimumScaleFactor(0.8)
                 .foregroundStyle(isMine ? Color.white : .secondary)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 5)
-                .background(isMine ? QTheme.gold : QTheme.paper, in: Capsule())
+                .padding(.vertical, 8)
+                .background(isMine ? QTheme.gold : QTheme.paper, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(bonus.title), plus \(RoundBonus.points)")
