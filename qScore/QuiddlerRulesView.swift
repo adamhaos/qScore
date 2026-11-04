@@ -216,6 +216,14 @@ private struct QuiddlerWordsPage: View {
             .font(.body)
             .foregroundStyle(QTheme.ink)
             .fixedSize(horizontal: false, vertical: true)
+
+            Label(
+                "qScore’s word check uses the ENABLE word list, which leaves out names, abbreviations and slang.",
+                systemImage: "checkmark.seal.fill"
+            )
+            .font(.body)
+            .foregroundStyle(QTheme.ink)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
