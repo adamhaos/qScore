@@ -141,8 +141,10 @@ struct HomeView: View {
                 Button {
                     store.isShowingRules = true
                 } label: {
-                    Label("Quiddler Rules", systemImage: "book.pages")
+                    Label("Rules", systemImage: "book.pages")
+                        .labelStyle(.titleAndIcon)
                 }
+                .accessibilityLabel("Quiddler Rules")
             }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: showingSetup) { _, isShowing in isShowing }
