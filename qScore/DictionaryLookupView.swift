@@ -1,5 +1,5 @@
 import Foundation
-import SafariServices
+import WebKit
 import SwiftUI
 
 struct DictionaryLookupView: View {
@@ -406,8 +406,7 @@ private struct DictionarySourceButtons: View {
                     .presentationDragIndicator(.visible)
             case .web:
                 if let dictionaryURL {
-                    SafariView(url: dictionaryURL)
-                        .ignoresSafeArea()
+                    DictionaryWebView(url: dictionaryURL)
                 }
             }
         }
@@ -460,18 +459,72 @@ private struct SystemDictionaryView: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIReferenceLibraryViewController, context: Context) {}
 }
 
-/// Dictionary.com in an in-app browser, tinted to match the app.
-private struct SafariView: UIViewControllerRepresentable {
+/// Dictionary.com in an in-app browser that leaves out the site's ads,
+/// its VocabTrainer pop-up and other clutter, so only the entry shows.
+private struct DictionaryWebView: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            AdFreeWebView(url: url)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle("Dictionary.com")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+    }
+}
+
+private struct AdFreeWebView: UIViewRepresentable {
     let url: URL
 
-    func makeUIViewController(context: Context) -> SFSafariViewController {
-        let controller = SFSafariViewController(url: url)
-        controller.preferredControlTintColor = UIColor(QTheme.sage)
-        controller.dismissButtonStyle = .done
-        return controller
+    /// Blocks every resource from another site except Dictionary.com's own
+    /// servers and Google Fonts. That covers the ad networks, video ads and
+    /// trackers the page pulls in.
+    private static let blockRules = """
+    [
+      {"trigger": {"url-filter": ".*", "load-type": ["third-party"]}, "action": {"type": "block"}},
+      {"trigger": {"url-filter": "^https?://([^/]+\\\\.)?(dictionary\\\\.com|googleapis\\\\.com|gstatic\\\\.com)[:/]"}, "action": {"type": "ignore-previous-rules"}}
+    ]
+    """
+
+    /// Hides the empty ad slots and the sign-up pop-up, and undoes the scroll
+    /// lock the pop-up puts on the page.
+    private static let cleanupCSS = """
+    .box-additional, [id^="dco"], .grecaptcha-badge,
+    #mask-vocab-trainer-modal, #dlg-vocab-trainer-modal { display: none !important; }
+    html, body { overflow: auto !important; }
+    """
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        let css = Self.cleanupCSS.replacingOccurrences(of: "\n", with: " ")
+        let script = "var s=document.createElement('style');s.textContent=`\(css)`;document.documentElement.appendChild(s);"
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        )
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+
+        // Load once the block list is ready, so no ad slips through first.
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "qScoreDictionaryBlocklist",
+            encodedContentRuleList: Self.blockRules
+        ) { ruleList, _ in
+            if let ruleList {
+                webView.configuration.userContentController.add(ruleList)
+            }
+            webView.load(URLRequest(url: url))
+        }
+        return webView
     }
 
-    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {}
 }
 
 private struct DictionaryLoadingView: View {
