@@ -1,4 +1,5 @@
 import Foundation
+import SafariServices
 import SwiftUI
 
 struct DictionaryLookupView: View {
@@ -66,8 +67,8 @@ struct DictionaryLookupView: View {
         .navigationTitle("Dictionary")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            loadHistoryIfNeeded()
             await QuiddlerWordList.preload()
+            loadHistoryIfNeeded()
         }
         .onAppear {
             resetAfterExtendedAbsenceIfNeeded()
@@ -150,14 +151,9 @@ struct DictionaryLookupView: View {
             from: lookupHistoryData
         ) else { return }
 
-        // Older versions saved web definitions with each lookup; only the verdict is kept now.
-        lookupHistory = savedHistory.map { entry in
-            entry.definitionSource == QuiddlerWordList.sourceName ? DictionaryEntry(
-                word: entry.word, meanings: [], legality: entry.legality, definitionSource: entry.definitionSource
-            ) : DictionaryEntry(
-                word: entry.word, meanings: [], legality: .unverified("Look up this word again to check it.")
-            )
-        }
+        // Check saved words again so they follow the current word lists
+        // (and drop the web definitions older versions saved).
+        lookupHistory = savedHistory.map { QuiddlerWordValidator.entry(for: $0.word) }
     }
 
     private func resetAfterExtendedAbsenceIfNeeded() {
@@ -327,7 +323,7 @@ private struct DictionaryEntryView: View {
             }
 
             if entry.definitionSource == QuiddlerWordList.sourceName {
-                Text("Rules check: ENABLE word list · Definitions: iPhone dictionary")
+                Text("Rules check: ENABLE word list + modern words")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -375,9 +371,18 @@ private struct DictionaryLegalityView: View {
 
 /// Ways to read a word's meaning: the iPhone's own dictionary, which works
 /// offline, and Dictionary.com, which the family uses to settle challenges.
+/// Both open in a sheet so the game stays a swipe away.
 private struct DictionarySourceButtons: View {
     let word: String
-    @State private var isShowingDefinition = false
+    /// Nil until checked. The iPhone dictionary is only offered when it has
+    /// an entry, since otherwise it shows an empty "No Content Found" page.
+    @State private var hasSystemDefinition: Bool?
+    @State private var sheet: Sheet?
+
+    private enum Sheet: String, Identifiable {
+        case system, web
+        var id: Self { self }
+    }
 
     private var dictionaryURL: URL? {
         guard let encoded = word.lowercased().addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
@@ -389,33 +394,58 @@ private struct DictionarySourceButtons: View {
             HStack(spacing: 10) { buttons }
             VStack(spacing: 10) { buttons }
         }
-        .sheet(isPresented: $isShowingDefinition) {
-            SystemDictionaryView(term: word)
-                .ignoresSafeArea()
+        .task(id: word) {
+            hasSystemDefinition = UIReferenceLibraryViewController.dictionaryHasDefinition(forTerm: word)
+        }
+        .sheet(item: $sheet) { sheet in
+            switch sheet {
+            case .system:
+                SystemDictionaryView(term: word)
+                    .ignoresSafeArea()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            case .web:
+                if let dictionaryURL {
+                    SafariView(url: dictionaryURL)
+                        .ignoresSafeArea()
+                }
+            }
         }
     }
 
     @ViewBuilder
     private var buttons: some View {
-        Button {
-            isShowingDefinition = true
-        } label: {
-            Label("Definition", systemImage: "character.book.closed.fill")
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(QTheme.sage)
-        .accessibilityHint("Opens the iPhone dictionary")
-
-        if let dictionaryURL {
-            Link(destination: dictionaryURL) {
-                Label("Dictionary.com", systemImage: "safari")
+        if hasSystemDefinition == true {
+            Button {
+                sheet = .system
+            } label: {
+                Label("Definition", systemImage: "character.book.closed.fill")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .tint(QTheme.sage)
-            .accessibilityHint("Opens this word on Dictionary.com")
+            .accessibilityHint("Shows the iPhone dictionary entry")
         }
+
+        if dictionaryURL != nil {
+            // The main button when there's no iPhone definition to show.
+            if hasSystemDefinition == true {
+                dictionaryButton.buttonStyle(.bordered)
+            } else {
+                dictionaryButton.buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private var dictionaryButton: some View {
+        Button {
+            sheet = .web
+        } label: {
+            Label("Dictionary.com", systemImage: "safari")
+                .frame(maxWidth: .infinity)
+        }
+        .tint(QTheme.sage)
+        .accessibilityHint("Opens this word on Dictionary.com")
     }
 }
 
@@ -428,6 +458,20 @@ private struct SystemDictionaryView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: UIReferenceLibraryViewController, context: Context) {}
+}
+
+/// Dictionary.com in an in-app browser, tinted to match the app.
+private struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.preferredControlTintColor = UIColor(QTheme.sage)
+        controller.dismissButtonStyle = .done
+        return controller
+    }
+
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 }
 
 private struct DictionaryLoadingView: View {

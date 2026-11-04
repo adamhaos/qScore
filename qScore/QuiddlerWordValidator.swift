@@ -109,12 +109,19 @@ enum QuiddlerWordValidator {
     }
 
     static func lookup(_ word: String) async throws -> DictionaryEntry {
+        await QuiddlerWordList.preload()
+        try Task.checkCancellation()
+        return entry(for: word)
+    }
+
+    /// Checks a word against the bundled lists. Call after the lists have
+    /// loaded (see `QuiddlerWordList.preload()`) to avoid stalling.
+    static func entry(for word: String) -> DictionaryEntry {
         if case .illegal(let reason) = fallbackCheck(word) {
             return DictionaryEntry(word: word, meanings: [], legality: .illegal(reason))
         }
         let normalized = normalized(word)
 
-        await QuiddlerWordList.preload()
         guard QuiddlerWordList.isAvailable else {
             return DictionaryEntry(word: normalized, meanings: [], legality: .unverified("The word list is missing from this build. Check this word in your agreed dictionary."))
         }
@@ -129,7 +136,6 @@ enum QuiddlerWordValidator {
 
         // The word list alone decides legality, so it works the same offline.
         // Definitions come from the iPhone's built-in dictionary on request.
-        try Task.checkCancellation()
         return DictionaryEntry(
             word: normalized,
             meanings: [],
