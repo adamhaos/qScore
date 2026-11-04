@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 import SwiftUI
 
 struct DictionaryLookupView: View {
@@ -27,15 +28,19 @@ struct DictionaryLookupView: View {
                         onSearch: submitLookup
                     )
 
-                    if isLoading {
-                        DictionaryLoadingView()
-                    } else if let entry {
-                        DictionaryEntryView(entry: entry)
-                    } else if let errorMessage {
-                        DictionaryErrorView(message: errorMessage)
-                    } else {
-                        DictionaryPromptView()
+                    Group {
+                        if isLoading {
+                            DictionaryLoadingView()
+                        } else if let entry {
+                            DictionaryEntryView(entry: entry)
+                                .id(entry.id)
+                        } else if let errorMessage {
+                            DictionaryErrorView(message: errorMessage)
+                        } else {
+                            DictionaryPromptView()
+                        }
                     }
+                    .transition(.blurReplace)
 
                     if !lookupHistory.isEmpty {
                         DictionaryHistoryView(
@@ -45,6 +50,16 @@ struct DictionaryLookupView: View {
                     }
                 }
                 .padding()
+                .animation(QMotion.smooth, value: resultState)
+                .animation(QMotion.smooth, value: lookupHistory.map(\.id))
+                .sensoryFeedback(trigger: entry?.id) { _, newID in
+                    guard newID != nil, let entry else { return nil }
+                    switch entry.resolvedLegality {
+                    case .legal: return SensoryFeedback.success
+                    case .illegal: return SensoryFeedback.error
+                    case .unverified, .meaningDependent: return SensoryFeedback.warning
+                    }
+                }
             }
             .id(scrollResetID)
             .scrollDismissesKeyboard(.interactively)
@@ -52,6 +67,7 @@ struct DictionaryLookupView: View {
         .navigationTitle("Dictionary")
         .navigationBarTitleDisplayMode(.inline)
         .task {
+            await QuiddlerWordList.preload()
             loadHistoryIfNeeded()
         }
         .onAppear {
@@ -63,6 +79,14 @@ struct DictionaryLookupView: View {
             isLoading = false
             leftDictionaryAt = .now
         }
+    }
+
+    /// Changes whenever the main result card swaps, so the swap animates.
+    private var resultState: String {
+        if isLoading { return "loading" }
+        if let entry { return "entry:" + entry.id }
+        if errorMessage != nil { return "error" }
+        return "prompt"
     }
 
     private var cleanWord: String {
@@ -82,8 +106,7 @@ struct DictionaryLookupView: View {
     @MainActor
     private func lookUp(submittedWord: String, requestID: UUID) async {
         guard !Task.isCancelled, lookupID == requestID else { return }
-        let normalizedWord = submittedWord.lowercased()
-        guard !normalizedWord.isEmpty else { return }
+        guard !submittedWord.isEmpty else { return }
 
         if case .illegal(let reason) = QuiddlerWordValidator.fallbackCheck(submittedWord) {
             entry = DictionaryEntry(word: submittedWord, meanings: [], legality: .illegal(reason))
@@ -96,20 +119,12 @@ struct DictionaryLookupView: View {
         entry = nil
         errorMessage = nil
 
-        do {
-            let newEntry = try await QuiddlerWordValidator.lookup(submittedWord)
-            guard !Task.isCancelled, lookupID == requestID else { return }
+        // Lookups are offline, so the only thing that can stop one is a newer lookup.
+        guard let newEntry = try? await QuiddlerWordValidator.lookup(submittedWord),
+              !Task.isCancelled, lookupID == requestID else { return }
 
-            entry = newEntry
-            recordLookup(newEntry)
-        } catch let error as DictionaryLookupError {
-            guard !Task.isCancelled, lookupID == requestID else { return }
-            entry = DictionaryEntry(word: normalizedWord, meanings: [], legality: .unverified(error.localizedDescription))
-        } catch {
-            guard !Task.isCancelled, lookupID == requestID else { return }
-            entry = DictionaryEntry(word: normalizedWord, meanings: [], legality: .unverified("The dictionary couldn't be reached. Check your connection and try again."))
-        }
-
+        entry = newEntry
+        recordLookup(newEntry)
         isLoading = false
     }
 
@@ -136,11 +151,9 @@ struct DictionaryLookupView: View {
             from: lookupHistoryData
         ) else { return }
 
-        lookupHistory = savedHistory.map { entry in
-            entry.definitionSource == "Wiktionary" ? entry : DictionaryEntry(
-                word: entry.word, meanings: [], legality: .unverified("Look up this word again to refresh its meaning.")
-            )
-        }
+        // Check saved words again so they follow the current word lists
+        // (and drop the web definitions older versions saved).
+        lookupHistory = savedHistory.map { QuiddlerWordValidator.entry(for: $0.word) }
     }
 
     private func resetAfterExtendedAbsenceIfNeeded() {
@@ -229,7 +242,8 @@ private struct DictionaryHistoryView: View {
                 } label: {
                     DictionaryHistoryCard(entry: entry)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable(scale: 0.97))
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -299,19 +313,17 @@ private struct DictionaryEntryView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            ForEach(Array(entry.meanings.prefix(3))) { meaning in
-                DictionaryMeaningView(meaning: meaning)
-            }
+            DictionarySourceButtons(word: entry.word)
 
-            if !entry.meanings.isEmpty,
+            if entry.resolvedLegality.isLegal,
                ["qu", "in", "er", "cl", "th"].contains(entry.word.lowercased()) {
                 Text("Use two separate letter cards, not a single double-letter card.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
-            if !entry.meanings.isEmpty {
-                Text("Definitions and rules check: Wiktionary")
+            if entry.definitionSource == QuiddlerWordList.sourceName {
+                Text("Rules check: ENABLE word list + modern words")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -357,44 +369,162 @@ private struct DictionaryLegalityView: View {
     }
 }
 
-private struct DictionaryMeaningView: View {
-    let meaning: DictionaryMeaning
+/// Ways to read a word's meaning: the iPhone's own dictionary, which works
+/// offline, and Dictionary.com, which the family uses to settle challenges.
+/// Both open in a sheet so the game stays a swipe away.
+private struct DictionarySourceButtons: View {
+    let word: String
+    /// Nil until checked. The iPhone dictionary is only offered when it has
+    /// an entry, since otherwise it shows an empty "No Content Found" page.
+    @State private var hasSystemDefinition: Bool?
+    @State private var sheet: Sheet?
+
+    private enum Sheet: String, Identifiable {
+        case system, web
+        var id: Self { self }
+    }
+
+    private var dictionaryURL: URL? {
+        guard let encoded = word.lowercased().addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
+        return URL(string: "https://www.dictionary.com/browse/" + encoded)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(meaning.partOfSpeech)
-                .font(.headline)
-                .foregroundStyle(QTheme.sage)
-                .textCase(.uppercase)
-
-            if let definition = meaning.definitions.first {
-                DictionaryDefinitionRow(definition: definition)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { buttons }
+            VStack(spacing: 10) { buttons }
+        }
+        .task(id: word) {
+            hasSystemDefinition = UIReferenceLibraryViewController.dictionaryHasDefinition(forTerm: word)
+        }
+        .sheet(item: $sheet) { sheet in
+            switch sheet {
+            case .system:
+                SystemDictionaryView(term: word)
+                    .ignoresSafeArea()
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            case .web:
+                if let dictionaryURL {
+                    DictionaryWebView(url: dictionaryURL)
+                }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .qCard()
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        if hasSystemDefinition == true {
+            Button {
+                sheet = .system
+            } label: {
+                Label("Definition", systemImage: "character.book.closed.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(QTheme.sage)
+            .accessibilityHint("Shows the iPhone dictionary entry")
+        }
+
+        if dictionaryURL != nil {
+            // The main button when there's no iPhone definition to show.
+            if hasSystemDefinition == true {
+                dictionaryButton.buttonStyle(.bordered)
+            } else {
+                dictionaryButton.buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private var dictionaryButton: some View {
+        Button {
+            sheet = .web
+        } label: {
+            Label("Dictionary.com", systemImage: "safari")
+                .frame(maxWidth: .infinity)
+        }
+        .tint(QTheme.sage)
+        .accessibilityHint("Opens this word on Dictionary.com")
     }
 }
 
-private struct DictionaryDefinitionRow: View {
-    let definition: DictionaryDefinition
+/// The definition screen iOS shows for Look Up, from dictionaries on the device.
+private struct SystemDictionaryView: UIViewControllerRepresentable {
+    let term: String
+
+    func makeUIViewController(context: Context) -> UIReferenceLibraryViewController {
+        UIReferenceLibraryViewController(term: term)
+    }
+
+    func updateUIViewController(_ controller: UIReferenceLibraryViewController, context: Context) {}
+}
+
+/// Dictionary.com in an in-app browser that leaves out the site's ads,
+/// its VocabTrainer pop-up and other clutter, so only the entry shows.
+private struct DictionaryWebView: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(definition.definition)
-                .font(.body)
-                .foregroundStyle(QTheme.ink)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let example = definition.example {
-                Text("“\(example)”")
-                    .font(.subheadline)
-                    .italic()
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        NavigationStack {
+            AdFreeWebView(url: url)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle("Dictionary.com")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
         }
     }
+}
+
+private struct AdFreeWebView: UIViewRepresentable {
+    let url: URL
+
+    /// Blocks every resource from another site except Dictionary.com's own
+    /// servers and Google Fonts. That covers the ad networks, video ads and
+    /// trackers the page pulls in.
+    private static let blockRules = """
+    [
+      {"trigger": {"url-filter": ".*", "load-type": ["third-party"]}, "action": {"type": "block"}},
+      {"trigger": {"url-filter": "^https?://([^/]+\\\\.)?(dictionary\\\\.com|googleapis\\\\.com|gstatic\\\\.com)[:/]"}, "action": {"type": "ignore-previous-rules"}}
+    ]
+    """
+
+    /// Hides the empty ad slots and the sign-up pop-up, and undoes the scroll
+    /// lock the pop-up puts on the page.
+    private static let cleanupCSS = """
+    .box-additional, [id^="dco"], .grecaptcha-badge,
+    #mask-vocab-trainer-modal, #dlg-vocab-trainer-modal { display: none !important; }
+    html, body { overflow: auto !important; }
+    """
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        let css = Self.cleanupCSS.replacingOccurrences(of: "\n", with: " ")
+        let script = "var s=document.createElement('style');s.textContent=`\(css)`;document.documentElement.appendChild(s);"
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        )
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsBackForwardNavigationGestures = true
+
+        // Load once the block list is ready, so no ad slips through first.
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "qScoreDictionaryBlocklist",
+            encodedContentRuleList: Self.blockRules
+        ) { ruleList, _ in
+            if let ruleList {
+                webView.configuration.userContentController.add(ruleList)
+            }
+            webView.load(URLRequest(url: url))
+        }
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
 }
 
 private struct DictionaryLoadingView: View {
@@ -420,7 +550,7 @@ private struct DictionaryPromptView: View {
             Text("Settle the next word challenge")
                 .font(.headline)
                 .foregroundStyle(QTheme.ink)
-            Text("Enter a word above to see its definition.")
+            Text("Enter a word above to see if it can be played.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -440,357 +570,5 @@ private struct DictionaryErrorView: View {
         )
         .frame(maxWidth: .infinity)
         .qCard()
-    }
-}
-
-private struct DictionaryEntry: Codable, Identifiable {
-    var id: String { word.lowercased() }
-    let word: String
-    let meanings: [DictionaryMeaning]
-    let legality: QuiddlerWordLegality?
-    var definitionSource: String?
-
-    var displayPhonetic: String? { nil }
-
-    var definitionPreview: String {
-        meanings.first?.definitions.first?.definition ?? "Definition unavailable"
-    }
-
-    var resolvedLegality: QuiddlerWordLegality {
-        legality ?? QuiddlerWordValidator.fallbackCheck(word)
-    }
-
-    init(
-        word: String,
-        meanings: [DictionaryMeaning],
-        legality: QuiddlerWordLegality?,
-        definitionSource: String? = nil
-    ) {
-        self.word = word
-        self.meanings = meanings
-        self.legality = legality
-        self.definitionSource = definitionSource
-    }
-
-}
-
-private enum QuiddlerWordLegality: Codable {
-    case legal
-    case illegal(String)
-    case unverified(String)
-    case meaningDependent(String)
-
-    var isLegal: Bool {
-        if case .legal = self { return true }
-        return false
-    }
-
-    var title: String {
-        switch self {
-        case .legal: "Legal Word"
-        case .illegal: "Illegal Word"
-        case .unverified: "Rules Check Unavailable"
-        case .meaningDependent: "Check Meaning"
-        }
-    }
-
-    var explanation: String? {
-        switch self {
-        case .legal: "Use at least two cards. Your agreed dictionary decides challenges."
-        case .illegal(let reason), .unverified(let reason), .meaningDependent(let reason): reason
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .legal: "checkmark.seal.fill"
-        case .illegal: "xmark.octagon.fill"
-        case .unverified: "questionmark.circle.fill"
-        case .meaningDependent: "exclamationmark.circle.fill"
-        }
-    }
-}
-
-private enum QuiddlerWordValidator {
-    private static let allowableHeadings = [
-        "noun", "verb", "adjective", "adverb", "pronoun", "preposition",
-        "conjunction", "interjection", "determiner", "article", "numeral"
-    ]
-
-    static func fallbackCheck(_ word: String) -> QuiddlerWordLegality {
-        if word.count < 2 {
-            return .illegal("Every word must use at least two cards.")
-        }
-
-        if word.contains(where: { $0 == "-" || $0 == "‐" || $0 == "‑" }) {
-            return .illegal("Hyphenated words aren’t allowed.")
-        }
-
-        if word.contains(where: \.isWhitespace) {
-            return .illegal("A play must be a single word.")
-        }
-
-        guard word.unicodeScalars.allSatisfy({
-            (65...90).contains(Int($0.value)) || (97...122).contains(Int($0.value))
-        }) else {
-            return .illegal("Use only letters A–Z. Punctuation and numbers can't be played.")
-        }
-
-        return .unverified("Check this word in your agreed dictionary.")
-    }
-
-    static func lookup(_ word: String) async throws -> DictionaryEntry {
-        if case .illegal(let reason) = fallbackCheck(word) {
-            return DictionaryEntry(word: word, meanings: [], legality: .illegal(reason))
-        }
-        let normalized = word.lowercased()
-        let candidates = [normalized, normalized.prefix(1).uppercased() + normalized.dropFirst(), normalized.uppercased()]
-        var checked = Set<String>()
-        var rejected: DictionaryEntry?
-        for candidate in candidates where checked.insert(candidate).inserted {
-            try Task.checkCancellation()
-            do {
-                async let source = fetchWiktionarySource(for: candidate)
-                let definitions = try await fetchDefinitions(for: candidate)
-                if definitions.isEmpty {
-                    return DictionaryEntry(word: normalized, meanings: [], legality: .illegal("No English definition was found."), definitionSource: "Wiktionary")
-                }
-                let sourceLegality = checkSource(try await source)
-                let result = entry(word: normalized, definitions: definitions, sourceLegality: sourceLegality)
-                if result.resolvedLegality.isLegal { return result }
-                if case .meaningDependent = result.resolvedLegality { return result }
-                rejected = result
-            } catch DictionaryLookupError.wordNotFound {
-                continue
-            }
-        }
-        return rejected ?? DictionaryEntry(word: normalized, meanings: [], legality: .illegal("No English definition was found."), definitionSource: "Wiktionary")
-    }
-
-    private static func fetchDefinitions(for word: String) async throws -> [WiktionaryMeaning] {
-        let url = URL(string: "https://en.wiktionary.org/api/rest_v1/page/definition")!.appendingPathComponent(word)
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5
-        request.setValue("qScore/1.0 (Quiddler word validation)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw DictionaryLookupError.unavailable }
-        if http.statusCode == 404 { throw DictionaryLookupError.wordNotFound }
-        guard (200...299).contains(http.statusCode) else { throw DictionaryLookupError.unavailable }
-        let entries = try JSONDecoder().decode([String: [WiktionaryMeaning]].self, from: data)
-        return (entries["en"] ?? []).filter { $0.language == "English" }
-    }
-
-    static func entry(word: String, definitions: [WiktionaryMeaning], sourceLegality: QuiddlerWordLegality) -> DictionaryEntry {
-        let englishDefinitions = definitions.filter { $0.language == "English" }
-        guard !englishDefinitions.isEmpty else {
-            return DictionaryEntry(word: word, meanings: [], legality: .illegal("No English definition was found."), definitionSource: "Wiktionary")
-        }
-        guard sourceLegality.isLegal else {
-            return DictionaryEntry(word: word, meanings: [], legality: sourceLegality, definitionSource: "Wiktionary")
-        }
-        var excludedSenses = false
-        let meanings = englishDefinitions.compactMap { meaning -> DictionaryMeaning? in
-            let partOfSpeech = meaning.partOfSpeech.lowercased()
-            guard allowableHeadings.contains(partOfSpeech) else {
-                excludedSenses = true
-                return nil
-            }
-            let eligible = meaning.definitions.compactMap { sense -> DictionaryDefinition? in
-                guard let text = DictionaryHTMLText.plainText(sense.definition), !text.isEmpty else { return nil }
-                let abbreviation = #"(?i)\b(?:abbreviation|initialism|acronym|short) (?:of|for)\b"#
-                let unresolvedReference = #"(?i:alternative (?:(?:letter-case|case) )?form of)\s+[A-Z]{2,}\b"#
-                if text.range(of: abbreviation, options: .regularExpression) != nil ||
-                    text.range(of: unresolvedReference, options: .regularExpression) != nil ||
-                    text.localizedCaseInsensitiveContains("misspelling of") {
-                    excludedSenses = true
-                    return nil
-                }
-                return DictionaryDefinition(partOfSpeech: partOfSpeech, definition: text)
-            }
-            return eligible.isEmpty ? nil : DictionaryMeaning(partOfSpeech: partOfSpeech, definitions: eligible)
-        }
-        let legality: QuiddlerWordLegality
-        if meanings.isEmpty {
-            legality = .unverified("No playable meaning could be confirmed.")
-        } else if excludedSenses {
-            legality = .meaningDependent("Abbreviations and proper-name meanings aren't allowed. Check the meanings shown below in your agreed dictionary.")
-        } else {
-            legality = .legal
-        }
-        return DictionaryEntry(word: word, meanings: meanings, legality: legality, definitionSource: "Wiktionary")
-    }
-
-    private static func fetchWiktionarySource(for word: String) async throws -> String {
-        guard var components = URLComponents(string: "https://en.wiktionary.org/w/api.php") else {
-            throw DictionaryLookupError.unavailable
-        }
-
-        components.queryItems = [
-            URLQueryItem(name: "action", value: "parse"),
-            URLQueryItem(name: "page", value: word),
-            URLQueryItem(name: "prop", value: "wikitext"),
-            URLQueryItem(name: "redirects", value: "1"),
-            URLQueryItem(name: "format", value: "json"),
-            URLQueryItem(name: "formatversion", value: "2")
-        ]
-
-        guard let url = components.url else {
-            throw DictionaryLookupError.unavailable
-        }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5
-        request.setValue("qScore/1.0 (Quiddler word validation)", forHTTPHeaderField: "User-Agent")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw DictionaryLookupError.unavailable
-        }
-
-        let decoded = try JSONDecoder().decode(WiktionaryParseResponse.self, from: data)
-        if let source = decoded.parse?.wikitext { return source }
-        if decoded.error?.code == "missingtitle" { throw DictionaryLookupError.wordNotFound }
-        throw DictionaryLookupError.unavailable
-    }
-
-    static func checkSource(_ source: String) -> QuiddlerWordLegality {
-        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let englishStart = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == "==English=="
-        }) else { return .illegal("No English definition was found.") }
-
-        var headings = Set<String>()
-        var currentHeading = ""
-        var hasAbbreviation = false
-        var hasUncertainDefinition = false
-        var hasAllowableMeaning = false
-        var abbreviationEtymology = false
-        for line in lines[lines.index(after: englishStart)...] {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("=="), !trimmed.hasPrefix("===") {
-                break
-            }
-            if trimmed.hasPrefix("==="), trimmed.hasSuffix("===") {
-                currentHeading = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "= ")).lowercased()
-                headings.insert(currentHeading)
-                if currentHeading.hasPrefix("etymology") { abbreviationEtymology = false }
-            } else if currentHeading.hasPrefix("etymology"),
-                      trimmed.range(of: #"\{\{\s*(?:acronym|initialism|abbreviation)\s*[|}]"#, options: [.regularExpression, .caseInsensitive]) != nil {
-                abbreviationEtymology = true
-            } else if trimmed.hasPrefix("#"), !trimmed.hasPrefix("##"),
-                      !trimmed.hasPrefix("#:"), !trimmed.hasPrefix("#*"),
-                      allowableHeadings.contains(currentHeading) {
-                let definition = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
-                let abbreviationPattern = #"\{\{\s*(?:abbreviation of|abbr of|initialism of|init of|acronym of|short for|abbreviation|initialism|acronym)\s*[|}]|\b(?:abbreviation|initialism|acronym) of\b"#
-                if abbreviationEtymology || definition.range(of: abbreviationPattern, options: [.regularExpression, .caseInsensitive]) != nil {
-                    hasAbbreviation = true
-                } else if definition.isEmpty || definition.contains("{{rfdef") || definition.contains("{{misspelling of") || definition.range(of: #"\{\{alternative (?:case )?form of\|en\|[A-Z]{2,}(?:[|}])"#, options: .regularExpression) != nil {
-                    hasUncertainDefinition = true
-                } else {
-                    hasAllowableMeaning = true
-                }
-            }
-        }
-        if hasAllowableMeaning { return .legal }
-        if hasUncertainDefinition { return .unverified("A qualifying meaning could not be confirmed.") }
-        if hasAbbreviation || !headings.isDisjoint(with: ["abbreviation", "initialism", "acronym"]) {
-            return .illegal("Abbreviations aren't allowed.")
-        }
-        if headings.contains("proper noun") { return .illegal("Proper nouns aren't allowed.") }
-        if !headings.isDisjoint(with: ["prefix", "suffix"]) {
-            return .illegal("Prefixes and suffixes can't be played by themselves.")
-        }
-        return .unverified("A qualifying English meaning could not be confirmed.")
-    }
-}
-
-private struct WiktionaryParseResponse: Decodable {
-    let parse: WiktionaryParseResult?
-    let error: WiktionaryAPIError?
-}
-
-private struct WiktionaryMeaning: Decodable {
-    let partOfSpeech: String
-    let language: String
-    let definitions: [WiktionarySense]
-}
-
-private struct WiktionarySense: Decodable {
-    let definition: String
-}
-
-private final class DictionaryHTMLText: NSObject, XMLParserDelegate {
-    private var text = ""
-
-    static func plainText(_ html: String) -> String? {
-        let fragment = html
-            .replacingOccurrences(of: #"<(?:link|br|hr|img|meta|input)\b[^>]*>"#, with: " ", options: [.regularExpression, .caseInsensitive])
-            .replacingOccurrences(of: "&nbsp;", with: "&#160;")
-            .replacingOccurrences(of: "&ndash;", with: "&#8211;")
-            .replacingOccurrences(of: "&mdash;", with: "&#8212;")
-        let parser = XMLParser(data: Data(("<root>" + fragment + "</root>").utf8))
-        parser.shouldResolveExternalEntities = false
-        let reader = DictionaryHTMLText()
-        parser.delegate = reader
-        guard parser.parse() else { return nil }
-        return reader.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-    }
-
-    func parser(_ parser: XMLParser, foundCharacters string: String) {
-        text += string
-    }
-}
-
-private struct WiktionaryAPIError: Decodable {
-    let code: String
-}
-
-private struct WiktionaryParseResult: Decodable {
-    let wikitext: String
-}
-
-private struct DictionaryMeaning: Codable, Identifiable {
-    let id: UUID
-    let partOfSpeech: String
-    let definitions: [DictionaryDefinition]
-
-    init(
-        id: UUID = UUID(),
-        partOfSpeech: String,
-        definitions: [DictionaryDefinition]
-    ) {
-        self.id = id
-        self.partOfSpeech = partOfSpeech
-        self.definitions = definitions
-    }
-}
-
-private struct DictionaryDefinition: Codable, Identifiable {
-    let id: UUID
-    let partOfSpeech: String
-    let definition: String
-    let example: String?
-
-    init(partOfSpeech: String, definition: String) {
-        self.id = UUID()
-        self.partOfSpeech = partOfSpeech
-        self.definition = definition
-        self.example = nil
-    }
-
-}
-
-private enum DictionaryLookupError: LocalizedError {
-    case wordNotFound
-    case unavailable
-
-    var errorDescription: String? {
-        switch self {
-        case .wordNotFound:
-            "Try checking the spelling or searching for another word."
-        case .unavailable:
-            "The dictionary is temporarily unavailable. Please try again."
-        }
     }
 }

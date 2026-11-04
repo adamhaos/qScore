@@ -12,16 +12,27 @@ struct HistoryView: View {
                 List {
                     ForEach(store.completedGames) { game in
                         NavigationLink(value: AppRoute.game(game.id)) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(summary(for: game)).font(.headline)
-                                Text("\(game.mode.title) • \(game.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            HStack(spacing: 12) {
+                                Image(systemName: game.leaders.count > 1 ? "medal.fill" : "trophy.fill")
+                                    .foregroundStyle(QTheme.gold)
+                                    .frame(width: 36, height: 36)
+                                    .background(QTheme.gold.opacity(0.16), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(summary(for: game)).font(.headline)
+                                    Label(
+                                        "\(game.mode.title) • \(game.createdAt.formatted(date: .abbreviated, time: .shortened))",
+                                        systemImage: "calendar"
+                                    )
                                     .font(.subheadline).foregroundStyle(.secondary)
+                                }
                             }
                             .padding(.vertical, 5)
                         }
                         .contextMenu {
                             Button("Delete Game", systemImage: "trash", role: .destructive) {
-                                store.deleteGame(withID: game.id)
+                                withAnimation(QMotion.smooth) {
+                                    store.deleteGame(withID: game.id)
+                                }
                             }
                         }
                     }
@@ -29,6 +40,10 @@ struct HistoryView: View {
                 }
                 .scrollContentBackground(.hidden)
             }
+        }
+        .animation(QMotion.smooth, value: store.completedGames.isEmpty)
+        .sensoryFeedback(trigger: store.completedGames.count) { oldCount, newCount in
+            newCount < oldCount ? SensoryFeedback.impact(weight: .medium) : nil
         }
         .navigationTitle("Game History")
     }

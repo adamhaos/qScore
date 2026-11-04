@@ -23,6 +23,14 @@ enum GameMode: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    var systemImage: String {
+        switch self {
+        case .standard: "arrow.up.right"
+        case .reverse: "arrow.down.right"
+        case .upAndBack: "arrow.up.and.down"
+        }
+    }
+
     var rounds: [Int] {
         switch self {
         case .standard: Array(3...10)
@@ -66,6 +74,11 @@ struct Game: Codable, Identifiable, Hashable {
     var currentRoundIndex: Int
     var scores: [RoundScore]
     var roundDrafts: [Int: [UUID: String]]?
+    /// Longest Word / Most Words bonuses awarded in each submitted round.
+    /// Optional so games saved before bonuses existed still decode.
+    var bonuses: [Int: RoundBonuses]?
+    /// Bonus picks for a round that hasn't been saved yet.
+    var bonusDrafts: [Int: RoundBonuses]?
 
     init(id: UUID = UUID(), createdAt: Date = .now, updatedAt: Date = .now, completedAt: Date? = nil, mode: GameMode, players: [Player], currentRoundIndex: Int = 0, scores: [RoundScore] = []) {
         self.id = id
@@ -77,22 +90,41 @@ struct Game: Codable, Identifiable, Hashable {
         self.currentRoundIndex = currentRoundIndex
         self.scores = scores
         self.roundDrafts = nil
+        self.bonuses = nil
+        self.bonusDrafts = nil
     }
 
     var isComplete: Bool { completedAt != nil }
     var currentCardCount: Int { mode.rounds[min(currentRoundIndex, mode.rounds.count - 1)] }
     var roundNumber: Int { min(currentRoundIndex + 1, mode.rounds.count) }
 
-    func score(for playerID: UUID, roundIndex: Int) -> Int? {
+    /// Points typed in for a round, without bonuses.
+    func basePoints(for playerID: UUID, roundIndex: Int) -> Int? {
         scores.first { $0.playerID == playerID && $0.roundIndex == roundIndex }?.points
+    }
+
+    func bonusPoints(for playerID: UUID, roundIndex: Int) -> Int {
+        bonuses?[roundIndex]?.points(for: playerID) ?? 0
+    }
+
+    /// A player's full score for a round, including any bonuses.
+    func score(for playerID: UUID, roundIndex: Int) -> Int? {
+        guard let base = basePoints(for: playerID, roundIndex: roundIndex) else { return nil }
+        return base + bonusPoints(for: playerID, roundIndex: roundIndex)
     }
 
     func total(for playerID: UUID) -> Int {
         scores
             .filter { $0.playerID == playerID }
             .reduce(0) { total, score in
-                total + score.points
+                total + score.points + bonusPoints(for: playerID, roundIndex: score.roundIndex)
             }
+    }
+
+    /// Standard competition ranking, so tied players share a place (1, 1, 3).
+    func rank(of playerID: UUID) -> Int {
+        let score = total(for: playerID)
+        return players.filter { total(for: $0.id) > score }.count + 1
     }
 
     var rankedPlayers: [Player] {
@@ -106,6 +138,72 @@ struct Game: Codable, Identifiable, Hashable {
     var leaders: [Player] {
         guard let best = players.map({ total(for: $0.id) }).max() else { return [] }
         return players.filter { total(for: $0.id) == best }
+    }
+}
+
+enum RoundBonus: String, Codable, CaseIterable, Identifiable {
+    case longestWord
+    case mostWords
+
+    static let points = 10
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .longestWord: "Longest Word"
+        case .mostWords: "Most Words"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .longestWord: "Longest"
+        case .mostWords: "Most"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .longestWord: "ruler.fill"
+        case .mostWords: "square.stack.3d.up.fill"
+        }
+    }
+}
+
+/// Who holds each bonus in a round. Each bonus can go to at most one player.
+struct RoundBonuses: Codable, Hashable {
+    var longestWord: UUID?
+    var mostWords: UUID?
+
+    subscript(bonus: RoundBonus) -> UUID? {
+        get {
+            switch bonus {
+            case .longestWord: longestWord
+            case .mostWords: mostWords
+            }
+        }
+        set {
+            switch bonus {
+            case .longestWord: longestWord = newValue
+            case .mostWords: mostWords = newValue
+            }
+        }
+    }
+
+    var isEmpty: Bool { longestWord == nil && mostWords == nil }
+
+    func bonuses(for playerID: UUID) -> [RoundBonus] {
+        RoundBonus.allCases.filter { self[$0] == playerID }
+    }
+
+    func points(for playerID: UUID) -> Int {
+        bonuses(for: playerID).count * RoundBonus.points
+    }
+
+    /// Gives the bonus to the player, or takes it back if they already hold it.
+    mutating func toggle(_ bonus: RoundBonus, for playerID: UUID) {
+        self[bonus] = self[bonus] == playerID ? nil : playerID
     }
 }
 
