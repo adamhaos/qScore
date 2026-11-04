@@ -105,8 +105,7 @@ struct DictionaryLookupView: View {
     @MainActor
     private func lookUp(submittedWord: String, requestID: UUID) async {
         guard !Task.isCancelled, lookupID == requestID else { return }
-        let normalizedWord = submittedWord.lowercased()
-        guard !normalizedWord.isEmpty else { return }
+        guard !submittedWord.isEmpty else { return }
 
         if case .illegal(let reason) = QuiddlerWordValidator.fallbackCheck(submittedWord) {
             entry = DictionaryEntry(word: submittedWord, meanings: [], legality: .illegal(reason))
@@ -119,20 +118,12 @@ struct DictionaryLookupView: View {
         entry = nil
         errorMessage = nil
 
-        do {
-            let newEntry = try await QuiddlerWordValidator.lookup(submittedWord)
-            guard !Task.isCancelled, lookupID == requestID else { return }
+        // Lookups are offline, so the only thing that can stop one is a newer lookup.
+        guard let newEntry = try? await QuiddlerWordValidator.lookup(submittedWord),
+              !Task.isCancelled, lookupID == requestID else { return }
 
-            entry = newEntry
-            recordLookup(newEntry)
-        } catch let error as DictionaryLookupError {
-            guard !Task.isCancelled, lookupID == requestID else { return }
-            entry = DictionaryEntry(word: normalizedWord, meanings: [], legality: .unverified(error.localizedDescription))
-        } catch {
-            guard !Task.isCancelled, lookupID == requestID else { return }
-            entry = DictionaryEntry(word: normalizedWord, meanings: [], legality: .unverified("The dictionary couldn't be reached. Check your connection and try again."))
-        }
-
+        entry = newEntry
+        recordLookup(newEntry)
         isLoading = false
     }
 
@@ -159,9 +150,12 @@ struct DictionaryLookupView: View {
             from: lookupHistoryData
         ) else { return }
 
+        // Older versions saved web definitions with each lookup; only the verdict is kept now.
         lookupHistory = savedHistory.map { entry in
-            entry.definitionSource == QuiddlerWordList.sourceName ? entry : DictionaryEntry(
-                word: entry.word, meanings: [], legality: .unverified("Look up this word again to refresh its meaning.")
+            entry.definitionSource == QuiddlerWordList.sourceName ? DictionaryEntry(
+                word: entry.word, meanings: [], legality: entry.legality, definitionSource: entry.definitionSource
+            ) : DictionaryEntry(
+                word: entry.word, meanings: [], legality: .unverified("Look up this word again to check it.")
             )
         }
     }
@@ -323,9 +317,7 @@ private struct DictionaryEntryView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            ForEach(Array(entry.meanings.prefix(3))) { meaning in
-                DictionaryMeaningView(meaning: meaning)
-            }
+            DictionarySourceButtons(word: entry.word)
 
             if entry.resolvedLegality.isLegal,
                ["qu", "in", "er", "cl", "th"].contains(entry.word.lowercased()) {
@@ -335,7 +327,7 @@ private struct DictionaryEntryView: View {
             }
 
             if entry.definitionSource == QuiddlerWordList.sourceName {
-                Text(entry.meanings.isEmpty ? "Rules check: ENABLE word list" : "Rules check: ENABLE word list · Definitions: Wiktionary")
+                Text("Rules check: ENABLE word list · Definitions: iPhone dictionary")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -381,44 +373,61 @@ private struct DictionaryLegalityView: View {
     }
 }
 
-private struct DictionaryMeaningView: View {
-    let meaning: DictionaryMeaning
+/// Ways to read a word's meaning: the iPhone's own dictionary, which works
+/// offline, and Dictionary.com, which the family uses to settle challenges.
+private struct DictionarySourceButtons: View {
+    let word: String
+    @State private var isShowingDefinition = false
+
+    private var dictionaryURL: URL? {
+        guard let encoded = word.lowercased().addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
+        return URL(string: "https://www.dictionary.com/browse/" + encoded)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(meaning.partOfSpeech)
-                .font(.headline)
-                .foregroundStyle(QTheme.sage)
-                .textCase(.uppercase)
-
-            if let definition = meaning.definitions.first {
-                DictionaryDefinitionRow(definition: definition)
-            }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { buttons }
+            VStack(spacing: 10) { buttons }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .qCard()
+        .sheet(isPresented: $isShowingDefinition) {
+            SystemDictionaryView(term: word)
+                .ignoresSafeArea()
+        }
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        Button {
+            isShowingDefinition = true
+        } label: {
+            Label("Definition", systemImage: "character.book.closed.fill")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(QTheme.sage)
+        .accessibilityHint("Opens the iPhone dictionary")
+
+        if let dictionaryURL {
+            Link(destination: dictionaryURL) {
+                Label("Dictionary.com", systemImage: "safari")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(QTheme.sage)
+            .accessibilityHint("Opens this word on Dictionary.com")
+        }
     }
 }
 
-private struct DictionaryDefinitionRow: View {
-    let definition: DictionaryDefinition
+/// The definition screen iOS shows for Look Up, from dictionaries on the device.
+private struct SystemDictionaryView: UIViewControllerRepresentable {
+    let term: String
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(definition.definition)
-                .font(.body)
-                .foregroundStyle(QTheme.ink)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let example = definition.example {
-                Text("“\(example)”")
-                    .font(.subheadline)
-                    .italic()
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
+    func makeUIViewController(context: Context) -> UIReferenceLibraryViewController {
+        UIReferenceLibraryViewController(term: term)
     }
+
+    func updateUIViewController(_ controller: UIReferenceLibraryViewController, context: Context) {}
 }
 
 private struct DictionaryLoadingView: View {
@@ -444,7 +453,7 @@ private struct DictionaryPromptView: View {
             Text("Settle the next word challenge")
                 .font(.headline)
                 .foregroundStyle(QTheme.ink)
-            Text("Enter a word above to see its definition.")
+            Text("Enter a word above to see if it can be played.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
