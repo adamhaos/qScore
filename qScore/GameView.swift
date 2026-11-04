@@ -394,7 +394,6 @@ private struct ScoreKeypad: View {
     let playerID: UUID
     let players: [Player]
     @State private var keyTick = 0
-    @State private var clearTick = 0
     @State private var bonusTick = 0
 
     private var text: String {
@@ -406,6 +405,12 @@ private struct ScoreKeypad: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                ForEach(RoundBonus.allCases) { bonus in
+                    bonusChip(bonus)
+                }
+            }
+
             ForEach(rows, id: \.self) { row in
                 HStack(spacing: 8) {
                     ForEach(row, id: \.self) { number in
@@ -417,12 +422,8 @@ private struct ScoreKeypad: View {
             }
 
             HStack(spacing: 8) {
-                keypadButton(systemImage: "clear") {
-                    guard !text.isEmpty else { return }
-                    text = ""
-                    clearTick += 1
-                }
-                .accessibilityLabel("Clear score")
+                keypadButton("+/−", action: toggleSign)
+                    .accessibilityLabel("Make score negative or positive")
 
                 keypadButton("0") {
                     appendDigit(0)
@@ -435,92 +436,43 @@ private struct ScoreKeypad: View {
                 }
                 .accessibilityLabel("Delete")
             }
-
-            Button(action: toggleSign) {
-                Text("+/−")
-                    .font(.title3.bold())
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(QTheme.paper, in: RoundedRectangle(cornerRadius: 10))
-            }
-            .buttonStyle(.pressable(scale: 0.95))
-            .accessibilityLabel("Make score negative or positive")
-
-            Divider()
-                .padding(.vertical, 2)
-
-            ForEach(RoundBonus.allCases) { bonus in
-                bonusButton(bonus)
-            }
         }
         .frame(width: 154, alignment: .center)
         .padding(10)
         .sensoryFeedback(.impact(weight: .light, intensity: 0.7), trigger: keyTick)
-        .sensoryFeedback(.impact(weight: .heavy), trigger: clearTick)
         .sensoryFeedback(.impact(weight: .medium), trigger: bonusTick)
     }
 
-    private func bonusButton(_ bonus: RoundBonus) -> some View {
-        let holder = bonuses[bonus]
-        let isMine = holder == playerID
-        let otherHolder = holder.flatMap { id -> Player? in id == playerID ? nil : players.first(where: { $0.id == id }) }
+    /// Small tappable label at the top of the keypad. Highlighted when this
+    /// player has the bonus; tapping it takes it from whoever had it.
+    private func bonusChip(_ bonus: RoundBonus) -> some View {
+        let isMine = bonuses[bonus] == playerID
 
         return Button {
-            withAnimation(QMotion.bouncy) {
+            withAnimation(QMotion.snappy) {
                 bonuses.toggle(bonus, for: playerID)
             }
             bonusTick += 1
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: isMine ? "checkmark.circle.fill" : bonus.systemImage)
-                    .font(.subheadline)
-                    .foregroundStyle(isMine ? QTheme.gold : .secondary)
-                    .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 18)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(bonus.title)
-                        .font(.caption.bold())
-                        .foregroundStyle(QTheme.ink)
-                    if let otherHolder {
-                        Text("Has: \(otherHolder.name)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+            Text(bonus.title)
+                .font(.caption2.bold())
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
-
-                Spacer(minLength: 2)
-
-                Text("+\(RoundBonus.points)")
-                    .font(.caption.monospacedDigit().bold())
-                    .foregroundStyle(isMine ? QTheme.gold : .secondary)
-            }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, minHeight: 40)
-            .background(
-                isMine ? QTheme.gold.opacity(0.18) : QTheme.paper,
-                in: RoundedRectangle(cornerRadius: 10)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(QTheme.gold, lineWidth: isMine ? 1.5 : 0)
-            }
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(isMine ? Color.white : .secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 5)
+                .background(isMine ? QTheme.gold : QTheme.paper, in: Capsule())
         }
-        .buttonStyle(.pressable(scale: 0.95))
-        .accessibilityLabel("\(bonus.title) bonus, plus \(RoundBonus.points)")
-        .accessibilityValue(isMine ? "Awarded" : (otherHolder.map { "Awarded to \($0.name)" } ?? "Not awarded"))
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(bonus.title), plus \(RoundBonus.points)")
         .accessibilityAddTraits(isMine ? .isSelected : [])
     }
 
     private func keypadButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.title3.monospacedDigit().bold())
-                .frame(width: 46, height: 44)
-                .background(QTheme.paper, in: RoundedRectangle(cornerRadius: 10))
-        }
-        .buttonStyle(.pressable(scale: 0.9))
+        Button(title, action: action)
+            .font(.title3.monospacedDigit().bold())
+            .frame(width: 46, height: 44)
+            .background(QTheme.paper, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func keypadButton(systemImage: String, action: @escaping () -> Void) -> some View {
@@ -530,7 +482,6 @@ private struct ScoreKeypad: View {
                 .frame(width: 46, height: 44)
                 .background(QTheme.paper, in: RoundedRectangle(cornerRadius: 10))
         }
-        .buttonStyle(.pressable(scale: 0.9))
     }
 
     private func appendDigit(_ digit: Int) {
