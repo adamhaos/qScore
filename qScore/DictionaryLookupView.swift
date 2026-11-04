@@ -53,6 +53,7 @@ struct DictionaryLookupView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             loadHistoryIfNeeded()
+            await QuiddlerWordList.preload()
         }
         .onAppear {
             resetAfterExtendedAbsenceIfNeeded()
@@ -137,7 +138,7 @@ struct DictionaryLookupView: View {
         ) else { return }
 
         lookupHistory = savedHistory.map { entry in
-            entry.definitionSource == "Wiktionary" ? entry : DictionaryEntry(
+            entry.definitionSource == QuiddlerWordList.sourceName ? entry : DictionaryEntry(
                 word: entry.word, meanings: [], legality: .unverified("Look up this word again to refresh its meaning.")
             )
         }
@@ -303,15 +304,15 @@ private struct DictionaryEntryView: View {
                 DictionaryMeaningView(meaning: meaning)
             }
 
-            if !entry.meanings.isEmpty,
+            if entry.resolvedLegality.isLegal,
                ["qu", "in", "er", "cl", "th"].contains(entry.word.lowercased()) {
                 Text("Use two separate letter cards, not a single double-letter card.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
 
-            if !entry.meanings.isEmpty {
-                Text("Definitions and rules check: Wiktionary")
+            if entry.definitionSource == QuiddlerWordList.sourceName {
+                Text(entry.meanings.isEmpty ? "Rules check: ENABLE word list" : "Rules check: ENABLE word list · Definitions: Wiktionary")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -544,27 +545,30 @@ private enum QuiddlerWordValidator {
             return DictionaryEntry(word: word, meanings: [], legality: .illegal(reason))
         }
         let normalized = word.lowercased()
-        let candidates = [normalized, normalized.prefix(1).uppercased() + normalized.dropFirst(), normalized.uppercased()]
-        var checked = Set<String>()
-        var rejected: DictionaryEntry?
-        for candidate in candidates where checked.insert(candidate).inserted {
-            try Task.checkCancellation()
-            do {
-                async let source = fetchWiktionarySource(for: candidate)
-                let definitions = try await fetchDefinitions(for: candidate)
-                if definitions.isEmpty {
-                    return DictionaryEntry(word: normalized, meanings: [], legality: .illegal("No English definition was found."), definitionSource: "Wiktionary")
-                }
-                let sourceLegality = checkSource(try await source)
-                let result = entry(word: normalized, definitions: definitions, sourceLegality: sourceLegality)
-                if result.resolvedLegality.isLegal { return result }
-                if case .meaningDependent = result.resolvedLegality { return result }
-                rejected = result
-            } catch DictionaryLookupError.wordNotFound {
-                continue
-            }
+
+        await QuiddlerWordList.preload()
+        guard QuiddlerWordList.isAvailable else {
+            return DictionaryEntry(word: normalized, meanings: [], legality: .unverified("The word list is missing from this build. Check this word in your agreed dictionary."))
         }
-        return rejected ?? DictionaryEntry(word: normalized, meanings: [], legality: .illegal("No English definition was found."), definitionSource: "Wiktionary")
+        guard QuiddlerWordList.contains(normalized) else {
+            return DictionaryEntry(
+                word: normalized,
+                meanings: [],
+                legality: .illegal("Not in the Quiddler word list. Names, abbreviations, slang and foreign words aren't allowed."),
+                definitionSource: QuiddlerWordList.sourceName
+            )
+        }
+
+        // The word list alone decides legality. Wiktionary only supplies the
+        // definitions shown, so being offline never changes the verdict.
+        try Task.checkCancellation()
+        let definitions = (try? await fetchDefinitions(for: normalized)) ?? []
+        return DictionaryEntry(
+            word: normalized,
+            meanings: playableMeanings(from: definitions),
+            legality: .legal,
+            definitionSource: QuiddlerWordList.sourceName
+        )
     }
 
     private static func fetchDefinitions(for word: String) async throws -> [WiktionaryMeaning] {
@@ -580,134 +584,25 @@ private enum QuiddlerWordValidator {
         return (entries["en"] ?? []).filter { $0.language == "English" }
     }
 
-    static func entry(word: String, definitions: [WiktionaryMeaning], sourceLegality: QuiddlerWordLegality) -> DictionaryEntry {
-        let englishDefinitions = definitions.filter { $0.language == "English" }
-        guard !englishDefinitions.isEmpty else {
-            return DictionaryEntry(word: word, meanings: [], legality: .illegal("No English definition was found."), definitionSource: "Wiktionary")
-        }
-        guard sourceLegality.isLegal else {
-            return DictionaryEntry(word: word, meanings: [], legality: sourceLegality, definitionSource: "Wiktionary")
-        }
-        var excludedSenses = false
-        let meanings = englishDefinitions.compactMap { meaning -> DictionaryMeaning? in
+    /// Keeps the everyday senses of a word and drops abbreviation,
+    /// proper-noun and misspelling senses so the definitions shown match
+    /// the way the word can be played.
+    private static func playableMeanings(from definitions: [WiktionaryMeaning]) -> [DictionaryMeaning] {
+        definitions.compactMap { meaning -> DictionaryMeaning? in
             let partOfSpeech = meaning.partOfSpeech.lowercased()
-            guard allowableHeadings.contains(partOfSpeech) else {
-                excludedSenses = true
-                return nil
-            }
+            guard allowableHeadings.contains(partOfSpeech) else { return nil }
             let eligible = meaning.definitions.compactMap { sense -> DictionaryDefinition? in
                 guard let text = DictionaryHTMLText.plainText(sense.definition), !text.isEmpty else { return nil }
                 let abbreviation = #"(?i)\b(?:abbreviation|initialism|acronym|short) (?:of|for)\b"#
-                let unresolvedReference = #"(?i:alternative (?:(?:letter-case|case) )?form of)\s+[A-Z]{2,}\b"#
                 if text.range(of: abbreviation, options: .regularExpression) != nil ||
-                    text.range(of: unresolvedReference, options: .regularExpression) != nil ||
                     text.localizedCaseInsensitiveContains("misspelling of") {
-                    excludedSenses = true
                     return nil
                 }
                 return DictionaryDefinition(partOfSpeech: partOfSpeech, definition: text)
             }
             return eligible.isEmpty ? nil : DictionaryMeaning(partOfSpeech: partOfSpeech, definitions: eligible)
         }
-        let legality: QuiddlerWordLegality
-        if meanings.isEmpty {
-            legality = .unverified("No playable meaning could be confirmed.")
-        } else if excludedSenses {
-            legality = .meaningDependent("Abbreviations and proper-name meanings aren't allowed. Check the meanings shown below in your agreed dictionary.")
-        } else {
-            legality = .legal
-        }
-        return DictionaryEntry(word: word, meanings: meanings, legality: legality, definitionSource: "Wiktionary")
     }
-
-    private static func fetchWiktionarySource(for word: String) async throws -> String {
-        guard var components = URLComponents(string: "https://en.wiktionary.org/w/api.php") else {
-            throw DictionaryLookupError.unavailable
-        }
-
-        components.queryItems = [
-            URLQueryItem(name: "action", value: "parse"),
-            URLQueryItem(name: "page", value: word),
-            URLQueryItem(name: "prop", value: "wikitext"),
-            URLQueryItem(name: "redirects", value: "1"),
-            URLQueryItem(name: "format", value: "json"),
-            URLQueryItem(name: "formatversion", value: "2")
-        ]
-
-        guard let url = components.url else {
-            throw DictionaryLookupError.unavailable
-        }
-
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5
-        request.setValue("qScore/1.0 (Quiddler word validation)", forHTTPHeaderField: "User-Agent")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw DictionaryLookupError.unavailable
-        }
-
-        let decoded = try JSONDecoder().decode(WiktionaryParseResponse.self, from: data)
-        if let source = decoded.parse?.wikitext { return source }
-        if decoded.error?.code == "missingtitle" { throw DictionaryLookupError.wordNotFound }
-        throw DictionaryLookupError.unavailable
-    }
-
-    static func checkSource(_ source: String) -> QuiddlerWordLegality {
-        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
-        guard let englishStart = lines.firstIndex(where: {
-            $0.trimmingCharacters(in: .whitespaces) == "==English=="
-        }) else { return .illegal("No English definition was found.") }
-
-        var headings = Set<String>()
-        var currentHeading = ""
-        var hasAbbreviation = false
-        var hasUncertainDefinition = false
-        var hasAllowableMeaning = false
-        var abbreviationEtymology = false
-        for line in lines[lines.index(after: englishStart)...] {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("=="), !trimmed.hasPrefix("===") {
-                break
-            }
-            if trimmed.hasPrefix("==="), trimmed.hasSuffix("===") {
-                currentHeading = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "= ")).lowercased()
-                headings.insert(currentHeading)
-                if currentHeading.hasPrefix("etymology") { abbreviationEtymology = false }
-            } else if currentHeading.hasPrefix("etymology"),
-                      trimmed.range(of: #"\{\{\s*(?:acronym|initialism|abbreviation)\s*[|}]"#, options: [.regularExpression, .caseInsensitive]) != nil {
-                abbreviationEtymology = true
-            } else if trimmed.hasPrefix("#"), !trimmed.hasPrefix("##"),
-                      !trimmed.hasPrefix("#:"), !trimmed.hasPrefix("#*"),
-                      allowableHeadings.contains(currentHeading) {
-                let definition = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
-                let abbreviationPattern = #"\{\{\s*(?:abbreviation of|abbr of|initialism of|init of|acronym of|short for|abbreviation|initialism|acronym)\s*[|}]|\b(?:abbreviation|initialism|acronym) of\b"#
-                if abbreviationEtymology || definition.range(of: abbreviationPattern, options: [.regularExpression, .caseInsensitive]) != nil {
-                    hasAbbreviation = true
-                } else if definition.isEmpty || definition.contains("{{rfdef") || definition.contains("{{misspelling of") || definition.range(of: #"\{\{alternative (?:case )?form of\|en\|[A-Z]{2,}(?:[|}])"#, options: .regularExpression) != nil {
-                    hasUncertainDefinition = true
-                } else {
-                    hasAllowableMeaning = true
-                }
-            }
-        }
-        if hasAllowableMeaning { return .legal }
-        if hasUncertainDefinition { return .unverified("A qualifying meaning could not be confirmed.") }
-        if hasAbbreviation || !headings.isDisjoint(with: ["abbreviation", "initialism", "acronym"]) {
-            return .illegal("Abbreviations aren't allowed.")
-        }
-        if headings.contains("proper noun") { return .illegal("Proper nouns aren't allowed.") }
-        if !headings.isDisjoint(with: ["prefix", "suffix"]) {
-            return .illegal("Prefixes and suffixes can't be played by themselves.")
-        }
-        return .unverified("A qualifying English meaning could not be confirmed.")
-    }
-}
-
-private struct WiktionaryParseResponse: Decodable {
-    let parse: WiktionaryParseResult?
-    let error: WiktionaryAPIError?
 }
 
 private struct WiktionaryMeaning: Decodable {
@@ -740,14 +635,6 @@ private final class DictionaryHTMLText: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, foundCharacters string: String) {
         text += string
     }
-}
-
-private struct WiktionaryAPIError: Decodable {
-    let code: String
-}
-
-private struct WiktionaryParseResult: Decodable {
-    let wikitext: String
 }
 
 private struct DictionaryMeaning: Codable, Identifiable {
