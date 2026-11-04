@@ -8,11 +8,18 @@ import Foundation
 nonisolated enum QuiddlerWordList {
     static let sourceName = "ENABLE word list"
 
+    /// ENABLE plus `QuiddlerModernWords.txt`, everyday words added to standard
+    /// dictionaries since ENABLE was compiled (email, app, selfie, qi, za).
     private static let words: Set<String> = {
-        guard let url = Bundle.main.url(forResource: "QuiddlerWords", withExtension: "txt"),
+        let enable = load("QuiddlerWords")
+        return enable.isEmpty ? [] : enable.union(load("QuiddlerModernWords"))
+    }()
+
+    private static func load(_ name: String) -> Set<String> {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "txt"),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         return Set(text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) })
-    }()
+    }
 
     /// False only if the bundled list is missing from the app.
     static var isAvailable: Bool { !words.isEmpty }
