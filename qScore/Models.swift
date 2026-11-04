@@ -23,6 +23,14 @@ enum GameMode: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    var systemImage: String {
+        switch self {
+        case .standard: "arrow.up.right"
+        case .reverse: "arrow.down.right"
+        case .upAndBack: "arrow.up.and.down"
+        }
+    }
+
     var rounds: [Int] {
         switch self {
         case .standard: Array(3...10)

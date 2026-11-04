@@ -38,7 +38,7 @@ struct GameSetupView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Choose a game")
+                        Label("Choose a game", systemImage: "rectangle.stack.fill")
                             .font(.title2.bold())
 
                         LazyVGrid(
@@ -59,7 +59,7 @@ struct GameSetupView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Who’s playing?").font(.title2.bold())
+                        Label("Who’s playing?", systemImage: "person.2.fill").font(.title2.bold())
                         Text("Add 2–8 players. You can use names or initials.").foregroundStyle(.secondary)
                         VStack(spacing: 10) {
                             ForEach(playerNames) { player in
@@ -123,7 +123,7 @@ struct GameSetupView: View {
                             store.path.append(.game(id))
                         }
                     } label: {
-                        Text("Start Game")
+                        Label("Start Game", systemImage: "play.fill")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 15)
@@ -186,7 +186,7 @@ private struct GameModeTile: View {
                         .contentTransition(.symbolEffect(.replace))
                 }
 
-                Text(mode.subtitle)
+                Label(mode.subtitle, systemImage: mode.systemImage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

@@ -47,35 +47,62 @@ struct ContentView: View {
         .tint(QTheme.ink)
         .sensoryFeedback(.selection, trigger: store.selectedTab)
         .overlay {
-            RulesPanelOverlay(isPresented: $store.isShowingRules)
+            TopDropPanel(
+                isPresented: store.isShowingRules,
+                heightFraction: 0.74,
+                accessibilityCloseLabel: "Close rules",
+                onClose: { store.isShowingRules = false }
+            ) {
+                QuiddlerRulesView { store.isShowingRules = false }
+            }
+        }
+        .overlay {
+            TopDropPanel(
+                isPresented: store.standingsGameID != nil,
+                accessibilityCloseLabel: "Close standings",
+                onClose: { store.standingsGameID = nil }
+            ) {
+                if let game = store.standingsGameID.flatMap({ store.game(withID: $0) }) {
+                    StandingsView(game: game) { store.standingsGameID = nil }
+                }
+            }
         }
     }
 }
 
-/// The rules drop down from the top of the screen and dim everything,
-/// including the tab bar. Tap the dimmed area, press Done, or drag the
-/// panel up to close it.
-private struct RulesPanelOverlay: View {
-    @Binding var isPresented: Bool
+/// A panel that drops down from the top of the screen and dims everything,
+/// including the tab bar. Used for the rules and the standings, whose
+/// buttons live at the top. Tap the dimmed area, press Done, or drag the
+/// grabber up to close it.
+private struct TopDropPanel<Content: View>: View {
+    let isPresented: Bool
+    /// Share of the screen height to fill, or nil to fit the content.
+    var heightFraction: CGFloat? = nil
+    let accessibilityCloseLabel: String
+    let onClose: () -> Void
+    @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
             let topInset = proxy.safeAreaInsets.top
-            let panelHeight = (proxy.size.height + topInset) * 0.74 - topInset
+            let screenHeight = proxy.size.height + topInset
+            let panelHeight = heightFraction.map { screenHeight * $0 - topInset }
 
             ZStack(alignment: .top) {
                 if isPresented {
                     Color.black.opacity(0.3)
                         .ignoresSafeArea()
-                        .onTapGesture(perform: close)
+                        .onTapGesture(perform: onClose)
                         .transition(.opacity)
-                        .accessibilityLabel("Close rules")
+                        .accessibilityLabel(accessibilityCloseLabel)
                         .accessibilityAddTraits(.isButton)
 
-                    QuiddlerRulesView(onDone: close)
+                    content()
+                        .padding(.bottom, heightFraction == nil ? 26 : 0)
                         .frame(height: panelHeight)
+                        .frame(maxHeight: screenHeight * 0.8 - topInset)
                         .background(alignment: .top) {
                             UnevenRoundedRectangle(
                                 bottomLeadingRadius: 30,
@@ -107,7 +134,7 @@ private struct RulesPanelOverlay: View {
                         .transition(
                             reduceMotion
                                 ? AnyTransition.opacity
-                                : AnyTransition.offset(y: -(panelHeight + topInset + 40))
+                                : AnyTransition.offset(y: -((panelHeight ?? screenHeight) + topInset + 40))
                         )
                 }
             }
@@ -132,16 +159,12 @@ private struct RulesPanelOverlay: View {
                     }
                     .onEnded { value in
                         if value.translation.height < -60 || value.predictedEndTranslation.height < -140 {
-                            close()
+                            onClose()
                         }
                         withAnimation(QMotion.snappy) { dragOffset = 0 }
                     }
             )
             .accessibilityHidden(true)
-    }
-
-    private func close() {
-        isPresented = false
     }
 }
 
