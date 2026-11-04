@@ -27,15 +27,19 @@ struct DictionaryLookupView: View {
                         onSearch: submitLookup
                     )
 
-                    if isLoading {
-                        DictionaryLoadingView()
-                    } else if let entry {
-                        DictionaryEntryView(entry: entry)
-                    } else if let errorMessage {
-                        DictionaryErrorView(message: errorMessage)
-                    } else {
-                        DictionaryPromptView()
+                    Group {
+                        if isLoading {
+                            DictionaryLoadingView()
+                        } else if let entry {
+                            DictionaryEntryView(entry: entry)
+                                .id(entry.id)
+                        } else if let errorMessage {
+                            DictionaryErrorView(message: errorMessage)
+                        } else {
+                            DictionaryPromptView()
+                        }
                     }
+                    .transition(.blurReplace)
 
                     if !lookupHistory.isEmpty {
                         DictionaryHistoryView(
@@ -45,6 +49,16 @@ struct DictionaryLookupView: View {
                     }
                 }
                 .padding()
+                .animation(QMotion.smooth, value: resultState)
+                .animation(QMotion.smooth, value: lookupHistory.map(\.id))
+                .sensoryFeedback(trigger: entry?.id) { _, newID in
+                    guard newID != nil, let entry else { return nil }
+                    switch entry.resolvedLegality {
+                    case .legal: return SensoryFeedback.success
+                    case .illegal: return SensoryFeedback.error
+                    case .unverified, .meaningDependent: return SensoryFeedback.warning
+                    }
+                }
             }
             .id(scrollResetID)
             .scrollDismissesKeyboard(.interactively)
@@ -63,6 +77,14 @@ struct DictionaryLookupView: View {
             isLoading = false
             leftDictionaryAt = .now
         }
+    }
+
+    /// Changes whenever the main result card swaps, so the swap animates.
+    private var resultState: String {
+        if isLoading { return "loading" }
+        if let entry { return "entry:" + entry.id }
+        if errorMessage != nil { return "error" }
+        return "prompt"
     }
 
     private var cleanWord: String {
@@ -229,7 +251,8 @@ private struct DictionaryHistoryView: View {
                 } label: {
                     DictionaryHistoryCard(entry: entry)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable(scale: 0.97))
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

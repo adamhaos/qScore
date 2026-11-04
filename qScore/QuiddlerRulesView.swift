@@ -2,50 +2,87 @@ import SwiftUI
 
 struct QuiddlerRulesView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onDone: (() -> Void)?
-    @State private var selectedPage = 1
+    /// Index into `slots`. Slots 0 and 5 are copies of the last and first
+    /// guide so swiping wraps around; once scrolling stops on a copy we jump,
+    /// without animation, to the real page showing the same guide.
+    @State private var scrolledSlot: Int? = 1
+
+    private static let pageCount = 4
+    private let slots = [3, 0, 1, 2, 3, 0]
 
     init(onDone: (() -> Void)? = nil) {
         self.onDone = onDone
     }
 
-    var body: some View {
-        ZStack {
-            QTheme.cream
-                .ignoresSafeArea()
-
-            VStack(spacing: 10) {
-                QuiddlerRulesHeader(onDone: close)
-
-                TabView(selection: $selectedPage) {
-                    QuiddlerScoringPage().tag(0)
-                    QuiddlerBasicsPage().tag(1)
-                    QuiddlerWordsPage().tag(2)
-                    QuiddlerGoingOutPage().tag(3)
-                    QuiddlerScoringPage().tag(4)
-                    QuiddlerBasicsPage().tag(5)
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .onChange(of: selectedPage) {
-                    if selectedPage == 0 {
-                        resetPage(to: 4)
-                    } else if selectedPage == 5 {
-                        resetPage(to: 1)
-                    }
-                }
-            }
-            .padding(.horizontal)
-            .padding(.top, 52)
-        }
+    private var currentPage: Int {
+        slots[scrolledSlot ?? 1]
     }
 
-    private func resetPage(to page: Int) {
-        Task { @MainActor in
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                selectedPage = page
+    var body: some View {
+        VStack(spacing: 10) {
+            QuiddlerRulesHeader(onDone: close)
+                .padding(.horizontal)
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(slots.indices, id: \.self) { slot in
+                        page(slots[slot])
+                            .containerRelativeFrame(.horizontal)
+                            .id(slot)
+                    }
+                }
+                .scrollTargetLayout()
             }
+            .scrollTargetBehavior(.paging)
+            .scrollIndicators(.hidden)
+            .scrollPosition(id: $scrolledSlot)
+            .onScrollPhaseChange { _, newPhase in
+                guard newPhase == .idle else { return }
+                wrapIfNeeded()
+            }
+            .onAppear {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { scrolledSlot = 1 }
+            }
+
+            QuiddlerPageIndicator(pageCount: Self.pageCount, currentPage: currentPage) { page in
+                withAnimation(reduceMotion ? nil : QMotion.smooth) {
+                    scrolledSlot = page + 1
+                }
+            }
+            .padding(.bottom, 26)
+        }
+        .padding(.top, 8)
+        .sensoryFeedback(.selection, trigger: currentPage)
+    }
+
+    @ViewBuilder
+    private func page(_ index: Int) -> some View {
+        Group {
+            switch index {
+            case 0: QuiddlerBasicsPage()
+            case 1: QuiddlerWordsPage()
+            case 2: QuiddlerGoingOutPage()
+            default: QuiddlerScoringPage()
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private func wrapIfNeeded() {
+        let target: Int
+        switch scrolledSlot ?? 1 {
+        case 0: target = slots.count - 2
+        case slots.count - 1: target = 1
+        default: return
+        }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            scrolledSlot = target
         }
     }
 
@@ -55,6 +92,33 @@ struct QuiddlerRulesView: View {
         } else {
             dismiss()
         }
+    }
+}
+
+/// Four little bars under the rules. The current page's bar is wider and green.
+private struct QuiddlerPageIndicator: View {
+    let pageCount: Int
+    let currentPage: Int
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<pageCount, id: \.self) { page in
+                Button {
+                    onSelect(page)
+                } label: {
+                    Capsule()
+                        .fill(page == currentPage ? QTheme.sage : QTheme.ink.opacity(0.18))
+                        .frame(width: page == currentPage ? 28 : 14, height: 5)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Page \(page + 1) of \(pageCount)")
+                .accessibilityAddTraits(page == currentPage ? .isSelected : [])
+            }
+        }
+        .animation(QMotion.snappy, value: currentPage)
     }
 }
 
@@ -221,6 +285,14 @@ private struct QuiddlerRulePage<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
+        ScrollView {
+            pageContent
+        }
+        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private var pageContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
@@ -244,8 +316,8 @@ private struct QuiddlerRulePage<Content: View>: View {
             content
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.vertical, 4)
     }
 }
 
@@ -292,7 +364,6 @@ private struct QuiddlerIconRule: View {
 }
 
 #Preview {
-    NavigationStack {
-        QuiddlerRulesView()
-    }
+    QuiddlerRulesView()
+        .background(QTheme.cream)
 }
