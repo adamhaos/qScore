@@ -12,10 +12,19 @@ struct HistoryView: View {
                 List {
                     ForEach(store.completedGames) { game in
                         NavigationLink(value: AppRoute.game(game.id)) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(summary(for: game)).font(.headline)
-                                Text("\(game.mode.title) • \(game.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            HStack(spacing: 12) {
+                                Image(systemName: game.leaders.count > 1 ? "medal.fill" : "trophy.fill")
+                                    .foregroundStyle(QTheme.gold)
+                                    .frame(width: 36, height: 36)
+                                    .background(QTheme.gold.opacity(0.16), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(summary(for: game)).font(.headline)
+                                    Label(
+                                        "\(game.mode.title) • \(game.createdAt.formatted(date: .abbreviated, time: .shortened))",
+                                        systemImage: "calendar"
+                                    )
                                     .font(.subheadline).foregroundStyle(.secondary)
+                                }
                             }
                             .padding(.vertical, 5)
                         }

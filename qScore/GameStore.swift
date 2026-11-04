@@ -8,6 +8,8 @@ final class GameStore {
     var path: [AppRoute] = []
     var selectedTab: AppTab = .games
     var isShowingRules = false
+    /// The game whose standings panel is showing, if any.
+    var standingsGameID: UUID?
 
     private let saveURL: URL?
 

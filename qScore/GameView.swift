@@ -7,7 +7,6 @@ struct GameView: View {
     @State private var scoreText: [UUID: String] = [:]
     @State private var bonusDraft = RoundBonuses()
     @State private var displayedRoundIndex: Int?
-    @State private var showingStandings = false
     @State private var showingShare = false
     @State private var finishedWhileOpen = false
     @State private var hasAppeared = false
@@ -39,7 +38,7 @@ struct GameView: View {
         .toolbar {
             if game?.isComplete == false {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingStandings = true } label: { Label("Standings", systemImage: "list.number") }
+                    Button { store.standingsGameID = gameID } label: { Label("Standings", systemImage: "list.number") }
                 }
             } else if game != nil {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -47,9 +46,10 @@ struct GameView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingStandings) {
-            if let game {
-                StandingsView(game: game).presentationDetents([.medium, .large])
+        .sensoryFeedback(trigger: feedbackTick) { _, _ in feedback?.sensoryFeedback }
+        .onDisappear {
+            if store.standingsGameID == gameID {
+                store.standingsGameID = nil
             }
         }
         .sheet(isPresented: $showingShare) {
@@ -59,9 +59,7 @@ struct GameView: View {
                     .presentationDragIndicator(.visible)
             }
         }
-        .sensoryFeedback(.impact(weight: .light), trigger: showingStandings) { _, isShowing in isShowing }
         .sensoryFeedback(.impact(weight: .light), trigger: showingShare) { _, isShowing in isShowing }
-        .sensoryFeedback(trigger: feedbackTick) { _, _ in feedback?.sensoryFeedback }
         .onAppear {
             if let game, !game.isComplete {
                 loadRound(displayedRoundIndex ?? game.currentRoundIndex, in: game)
@@ -87,9 +85,12 @@ struct GameView: View {
                         .font(.system(size: 64, weight: .black, design: .rounded))
                         .foregroundStyle(QTheme.ink)
                         .contentTransition(.numericText(value: Double(cardCount)))
-                    Text(isReviewingRound ? "CARDS · EDITING PAST ROUND" : "CARDS THIS ROUND")
-                        .font(.caption.bold()).tracking(1.6).foregroundStyle(isReviewingRound ? QTheme.gold : .secondary)
-                        .contentTransition(.opacity)
+                    Label(
+                        isReviewingRound ? "CARDS · EDITING PAST ROUND" : "CARDS THIS ROUND",
+                        systemImage: isReviewingRound ? "pencil.circle.fill" : "rectangle.portrait.on.rectangle.portrait.fill"
+                    )
+                    .font(.caption.bold()).tracking(1.6).foregroundStyle(isReviewingRound ? QTheme.gold : .secondary)
+                    .contentTransition(.opacity)
                     ProgressView(value: Double(roundIndex + 1), total: Double(game.mode.rounds.count))
                         .tint(QTheme.sage).padding(.top, 8)
                 }
@@ -126,9 +127,10 @@ struct GameView: View {
         let heldBonuses = bonusDraft.bonuses(for: player.id)
 
         return HStack(spacing: 12) {
+            PlayerAvatar(name: player.name, isLeading: game.leaders.count == 1 && game.leaders.first?.id == player.id)
             VStack(alignment: .leading, spacing: 3) {
                 Text(player.name).font(.headline)
-                Text("Total: \(total)")
+                Label("Total: \(total)", systemImage: "sum")
                     .font(.caption).foregroundStyle(.secondary)
                     .contentTransition(.numericText(value: Double(total)))
                 if !heldBonuses.isEmpty {
@@ -170,15 +172,11 @@ struct GameView: View {
             Button {
                 saveRound(game, roundIndex: roundIndex)
             } label: {
-                Text(
-                    isReviewingRound
-                        ? "Update Round"
-                        : (game.currentRoundIndex == game.mode.rounds.count - 1
-                            ? "Finish Game"
-                            : "Save Round & Continue")
-                )
+                saveButtonLabel(game: game, isReviewingRound: isReviewingRound)
                 .contentTransition(.opacity)
                 .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 15)
             }
@@ -200,6 +198,14 @@ struct GameView: View {
             .disabled(roundIndex >= game.currentRoundIndex)
             .accessibilityLabel("Next round")
         }
+    }
+
+    private func saveButtonLabel(game: Game, isReviewingRound: Bool) -> some View {
+        let isLastRound = game.currentRoundIndex == game.mode.rounds.count - 1
+        return Label(
+            isReviewingRound ? "Update Round" : (isLastRound ? "Finish Game" : "Save Round & Continue"),
+            systemImage: isReviewingRound ? "arrow.triangle.2.circlepath" : (isLastRound ? "flag.checkered" : "checkmark.circle.fill")
+        )
     }
 
     private func showRound(_ roundIndex: Int, in game: Game) {
@@ -330,6 +336,30 @@ private enum GameFeedback {
         case .roundChanged: .selection
         case .leaderChanged: .impact(weight: .heavy)
         }
+    }
+}
+
+/// A round badge with the player's initial. The leader's turns gold.
+private struct PlayerAvatar: View {
+    let name: String
+    let isLeading: Bool
+
+    var body: some View {
+        Text(String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased())
+            .font(.subheadline.bold())
+            .foregroundStyle(isLeading ? QTheme.gold : QTheme.sage)
+            .frame(width: 34, height: 34)
+            .background((isLeading ? QTheme.gold : QTheme.sage).opacity(0.16), in: Circle())
+            .overlay(alignment: .topTrailing) {
+                if isLeading {
+                    Image(systemName: "crown.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(QTheme.gold)
+                        .offset(x: 3, y: -4)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .accessibilityHidden(true)
     }
 }
 
@@ -507,24 +537,83 @@ private struct ScoreKeypad: View {
 
 }
 
+/// Current standings, shown in the panel that drops down from the top.
 struct StandingsView: View {
     let game: Game
+    var onDone: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List(game.rankedPlayers) { player in
-                let rank = game.rank(of: player.id)
-                HStack {
-                    Text("\(rank)").font(.headline.monospacedDigit()).foregroundStyle(rank == 1 ? QTheme.gold : .secondary).frame(width: 28)
-                    Text(player.name)
-                    Spacer()
-                    Text("\(game.total(for: player.id))").font(.headline.monospacedDigit())
+        VStack(spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "list.number")
+                    .font(.title2)
+                    .foregroundStyle(QTheme.sage)
+                    .frame(width: 48, height: 48)
+                    .background(QTheme.sage.opacity(0.14), in: Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Standings")
+                        .font(.title2.bold())
+                        .foregroundStyle(QTheme.ink)
+                    Label(
+                        "Round \(game.roundNumber) of \(game.mode.rounds.count) · \(game.mode.title)",
+                        systemImage: game.mode.systemImage
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Done") {
+                    if let onDone { onDone() } else { dismiss() }
+                }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.borderedProminent)
+                .tint(QTheme.sage)
+            }
+
+            VStack(spacing: 0) {
+                ForEach(game.rankedPlayers) { player in
+                    let rank = game.rank(of: player.id)
+                    HStack(spacing: 12) {
+                        Group {
+                            if rank == 1 {
+                                Image(systemName: "crown.fill")
+                                    .foregroundStyle(QTheme.gold)
+                            } else {
+                                Text("\(rank)")
+                                    .font(.headline.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: 28)
+
+                        Image(systemName: "person.crop.circle.fill")
+                            .foregroundStyle(QTheme.sage)
+                        Text(player.name)
+                            .font(.headline)
+                            .foregroundStyle(QTheme.ink)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(game.total(for: player.id))")
+                            .font(.title3.monospacedDigit().bold())
+                            .foregroundStyle(rank == 1 ? QTheme.gold : QTheme.ink)
+                    }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 10)
+                    .background(
+                        rank == 1 ? QTheme.gold.opacity(0.12) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                    if player.id != game.rankedPlayers.last?.id { Divider() }
                 }
             }
-            .navigationTitle("Standings")
-            .toolbar { Button("Done") { dismiss() } }
+            .qCard(showsShadow: false)
         }
+        .padding(.horizontal)
+        .padding(.top, 8)
     }
 }
 
@@ -580,7 +669,10 @@ struct CompletedGameView: View {
                     .opacity(revealed ? 1 : 0)
                     .animation(entrance(delay: 0.15), value: revealed)
 
-                Text(game.mode.title + " • " + game.createdAt.formatted(date: .abbreviated, time: .omitted))
+                Label(
+                    game.mode.title + " • " + game.createdAt.formatted(date: .abbreviated, time: .omitted),
+                    systemImage: game.mode.systemImage
+                )
                     .foregroundStyle(.secondary)
                     .opacity(revealed ? 1 : 0)
                     .animation(entrance(delay: 0.25), value: revealed)
@@ -616,7 +708,7 @@ struct CompletedGameView: View {
                 .qCard()
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Round by Round").font(.headline)
+                    Label("Round by Round", systemImage: "tablecells").font(.headline)
                     ScrollView(.horizontal) {
                         Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
                             GridRow {
