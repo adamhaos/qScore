@@ -289,18 +289,21 @@ struct GameView: View {
     }
 
     private func leaderBanner(_ game: Game) -> some View {
-        let leaderKey = game.leaders.map(\.id.uuidString).joined(separator: ",")
-        let leadingTotal = game.leaders.first.map { game.total(for: $0.id) }
+        // Before the first round is saved everyone is level at 0, which
+        // isn't a tie worth announcing.
+        let hasScores = !game.scores.isEmpty
+        let leaderKey = hasScores ? game.leaders.map(\.id.uuidString).joined(separator: ",") : ""
+        let leadingTotal = hasScores ? game.leaders.first.map { game.total(for: $0.id) } : nil
 
         return HStack {
             Image(systemName: "crown.fill")
-                .foregroundStyle(QTheme.gold)
+                .foregroundStyle(hasScores ? QTheme.gold : .secondary)
                 .symbolEffect(.bounce, value: leaderKey)
             VStack(alignment: .leading, spacing: 2) {
-                Text(game.leaders.count == 1 ? "Current Leader" : "Currently Tied")
+                Text(!hasScores ? "Leader" : game.leaders.count == 1 ? "Current Leader" : "Currently Tied")
                     .font(.caption).foregroundStyle(.secondary)
                     .contentTransition(.opacity)
-                Text(game.leaders.map(\.name).joined(separator: " & "))
+                Text(hasScores ? game.leaders.map(\.name).joined(separator: " & ") : "No scores yet")
                     .font(.headline).foregroundStyle(QTheme.ink)
                     .contentTransition(.interpolate)
             }

@@ -297,7 +297,7 @@ struct GameShareCard: View {
                         ForEach(players) { player in
                             Text("\(game.total(for: player.id))")
                                 .font(.subheadline.weight(.bold).monospacedDigit())
-                                .foregroundStyle(game.rank(of: player.id) == 1 ? style.gold : style.ink)
+                                .foregroundStyle(options.showPlaces && game.rank(of: player.id) == 1 ? style.gold : style.ink)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.6)
                         }
