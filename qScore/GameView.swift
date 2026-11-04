@@ -7,6 +7,7 @@ struct GameView: View {
     @State private var scoreText: [UUID: String] = [:]
     @State private var bonusDraft = RoundBonuses()
     @State private var displayedRoundIndex: Int?
+    @State private var showingShare = false
     @State private var finishedWhileOpen = false
     @State private var hasAppeared = false
     @State private var feedback: GameFeedback?
@@ -22,7 +23,9 @@ struct GameView: View {
             QBackground()
             if let game {
                 if game.isComplete {
-                    CompletedGameView(game: game, celebration: finishedWhileOpen ? .full : .quick)
+                    CompletedGameView(game: game, celebration: finishedWhileOpen ? .full : .quick) {
+                        showingShare = true
+                    }
                         .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 } else {
                     activeGame(game)
@@ -37,6 +40,10 @@ struct GameView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { store.standingsGameID = gameID } label: { Label("Standings", systemImage: "list.number") }
                 }
+            } else if game != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingShare = true } label: { Label("Share", systemImage: "square.and.arrow.up") }
+                }
             }
         }
         .sensoryFeedback(trigger: feedbackTick) { _, _ in feedback?.sensoryFeedback }
@@ -45,6 +52,14 @@ struct GameView: View {
                 store.standingsGameID = nil
             }
         }
+        .sheet(isPresented: $showingShare) {
+            if let game {
+                ShareGameView(game: game)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: showingShare) { _, isShowing in isShowing }
         .onAppear {
             if let game, !game.isComplete {
                 loadRound(displayedRoundIndex ?? game.currentRoundIndex, in: game)
@@ -612,6 +627,7 @@ enum CelebrationStyle {
 struct CompletedGameView: View {
     let game: Game
     var celebration: CelebrationStyle = .quick
+    var onShare: (() -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var revealed = false
     @State private var trophyBounce = 0
@@ -719,6 +735,22 @@ struct CompletedGameView: View {
                 .opacity(revealed ? 1 : 0)
                 .offset(y: revealed || reduceMotion ? 0 : 24)
                 .animation(entrance(delay: 0.45 + Double(ranked.count) * 0.09), value: revealed)
+
+                if let onShare {
+                    Button(action: onShare) {
+                        Label("Share Results", systemImage: "square.and.arrow.up")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(QTheme.sage, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: QTheme.sage.opacity(0.3), radius: 10, y: 4)
+                    }
+                    .buttonStyle(.pressable)
+                    .opacity(revealed ? 1 : 0)
+                    .offset(y: revealed || reduceMotion ? 0 : 24)
+                    .animation(entrance(delay: 0.55 + Double(ranked.count) * 0.09), value: revealed)
+                }
             }
             .padding()
         }
