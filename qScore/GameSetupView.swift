@@ -14,6 +14,8 @@ struct GameSetupView: View {
     @State private var mode: GameMode = .standard
     @State private var playerNames = [PlayerEntry(), PlayerEntry()]
     @FocusState private var focusedPlayer: UUID?
+    @State private var startTick = 0
+    @State private var playerCountTick = 0
 
     init(onStart: ((UUID) -> Void)? = nil) {
         self.onStart = onStart
@@ -48,7 +50,9 @@ struct GameSetupView: View {
                                     mode: option,
                                     isSelected: mode == option
                                 ) {
-                                    mode = option
+                                    withAnimation(QMotion.bouncy) {
+                                        mode = option
+                                    }
                                 }
                             }
                         }
@@ -71,30 +75,44 @@ struct GameSetupView: View {
                                             if focusedPlayer == player.id {
                                                 focusedPlayer = nil
                                             }
-                                            playerNames.removeAll { $0.id == player.id }
+                                            withAnimation(QMotion.snappy) {
+                                                playerNames.removeAll { $0.id == player.id }
+                                            }
+                                            playerCountTick += 1
                                         } label: {
                                             Image(systemName: "minus.circle.fill")
                                         }
+                                        .buttonStyle(.pressable(scale: 0.85))
+                                        .transition(.scale.combined(with: .opacity))
                                     }
                                 }
                                 .padding(12)
                                 .background(QTheme.paper.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+                                .transition(.asymmetric(
+                                    insertion: .opacity.combined(with: .move(edge: .top)),
+                                    removal: .opacity.combined(with: .scale(scale: 0.9))
+                                ))
                             }
                             if playerNames.count < 8 {
                                 Button {
                                     let player = PlayerEntry()
-                                    playerNames.append(player)
+                                    withAnimation(QMotion.snappy) {
+                                        playerNames.append(player)
+                                    }
+                                    playerCountTick += 1
                                     focusedPlayer = player.id
                                 } label: {
                                     Label("Add Player", systemImage: "plus").frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .padding(.top, 4)
+                                .transition(.opacity)
                             }
                         }
                         .qCard()
                     }
 
                     Button {
+                        startTick += 1
                         let id = store.createGame(mode: mode, playerNames: resolvedNames)
                         if let onStart {
                             onStart(id)
@@ -120,6 +138,9 @@ struct GameSetupView: View {
         .navigationTitle("New Game")
         .navigationBarTitleDisplayMode(.inline)
         .presentationDetents(sheetDetents)
+        .sensoryFeedback(.selection, trigger: mode)
+        .sensoryFeedback(.impact(weight: .light), trigger: playerCountTick)
+        .sensoryFeedback(.impact(weight: .heavy), trigger: startTick)
     }
 
     private var sheetDetents: Set<PresentationDetent> {
@@ -162,6 +183,7 @@ private struct GameModeTile: View {
 
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(isSelected ? QTheme.sage : .secondary)
+                        .contentTransition(.symbolEffect(.replace))
                 }
 
                 Text(mode.subtitle)
@@ -174,7 +196,10 @@ private struct GameModeTile: View {
             }
             .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
             .padding(12)
-            .background(QTheme.paper, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(
+                isSelected ? QTheme.sage.opacity(0.12) : QTheme.paper,
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(
@@ -183,7 +208,7 @@ private struct GameModeTile: View {
                     )
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable(scale: 0.95))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

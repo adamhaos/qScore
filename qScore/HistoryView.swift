@@ -21,7 +21,9 @@ struct HistoryView: View {
                         }
                         .contextMenu {
                             Button("Delete Game", systemImage: "trash", role: .destructive) {
-                                store.deleteGame(withID: game.id)
+                                withAnimation(QMotion.smooth) {
+                                    store.deleteGame(withID: game.id)
+                                }
                             }
                         }
                     }
@@ -29,6 +31,10 @@ struct HistoryView: View {
                 }
                 .scrollContentBackground(.hidden)
             }
+        }
+        .animation(QMotion.smooth, value: store.completedGames.isEmpty)
+        .sensoryFeedback(trigger: store.completedGames.count) { oldCount, newCount in
+            newCount < oldCount ? SensoryFeedback.impact(weight: .medium) : nil
         }
         .navigationTitle("Game History")
     }

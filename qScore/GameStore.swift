@@ -7,6 +7,7 @@ final class GameStore {
     var games: [Game] = []
     var path: [AppRoute] = []
     var selectedTab: AppTab = .games
+    var isShowingRules = false
 
     private let saveURL: URL?
 
@@ -44,7 +45,7 @@ final class GameStore {
         return game.id
     }
 
-    func submitRound(gameID: UUID, points: [UUID: Int]) {
+    func submitRound(gameID: UUID, points: [UUID: Int], bonuses: RoundBonuses = RoundBonuses()) {
         guard let gameIndex = games.firstIndex(where: { $0.id == gameID }),
               !games[gameIndex].isComplete,
               games[gameIndex].players.allSatisfy({ points[$0.id] != nil }) else { return }
@@ -62,6 +63,7 @@ final class GameStore {
         }
 
         games[gameIndex].roundDrafts?[roundIndex] = nil
+        setBonuses(bonuses, gameIndex: gameIndex, roundIndex: roundIndex)
         if roundIndex == games[gameIndex].mode.rounds.count - 1 {
             games[gameIndex].completedAt = .now
         } else {
@@ -71,7 +73,7 @@ final class GameStore {
         persist()
     }
 
-    func updateRound(gameID: UUID, roundIndex: Int, points: [UUID: Int]) {
+    func updateRound(gameID: UUID, roundIndex: Int, points: [UUID: Int], bonuses: RoundBonuses = RoundBonuses()) {
         guard let gameIndex = games.firstIndex(where: { $0.id == gameID }),
               roundIndex >= 0,
               roundIndex <= games[gameIndex].currentRoundIndex,
@@ -92,6 +94,7 @@ final class GameStore {
         }
 
         games[gameIndex].roundDrafts?[roundIndex] = nil
+        setBonuses(bonuses, gameIndex: gameIndex, roundIndex: roundIndex)
         games[gameIndex].updatedAt = .now
         persist()
     }
@@ -105,6 +108,31 @@ final class GameStore {
         }
         games[gameIndex].roundDrafts?[roundIndex] = scores
         persist()
+    }
+
+    func saveBonusDraft(gameID: UUID, roundIndex: Int, bonuses: RoundBonuses) {
+        guard let gameIndex = games.firstIndex(where: { $0.id == gameID }),
+              !games[gameIndex].isComplete,
+              games[gameIndex].mode.rounds.indices.contains(roundIndex) else { return }
+        if games[gameIndex].bonusDrafts == nil {
+            games[gameIndex].bonusDrafts = [:]
+        }
+        games[gameIndex].bonusDrafts?[roundIndex] = bonuses
+        persist()
+    }
+
+    /// Stores a round's saved bonuses, dropping any player who isn't in the game.
+    private func setBonuses(_ bonuses: RoundBonuses, gameIndex: Int, roundIndex: Int) {
+        let playerIDs = Set(games[gameIndex].players.map(\.id))
+        var cleaned = bonuses
+        for bonus in RoundBonus.allCases where cleaned[bonus].map({ !playerIDs.contains($0) }) ?? false {
+            cleaned[bonus] = nil
+        }
+        if games[gameIndex].bonuses == nil {
+            games[gameIndex].bonuses = [:]
+        }
+        games[gameIndex].bonuses?[roundIndex] = cleaned.isEmpty ? nil : cleaned
+        games[gameIndex].bonusDrafts?[roundIndex] = nil
     }
 
     func deleteGames(at offsets: IndexSet, from source: [Game]) {
