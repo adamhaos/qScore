@@ -99,10 +99,7 @@ private struct TopDropPanel<Content: View>: View {
                         .accessibilityLabel(accessibilityCloseLabel)
                         .accessibilityAddTraits(.isButton)
 
-                    content()
-                        .padding(.bottom, heightFraction == nil ? 26 : 0)
-                        .frame(height: panelHeight)
-                        .frame(maxHeight: screenHeight * 0.8 - topInset)
+                    sized(content(), panelHeight: panelHeight)
                         .background(alignment: .top) {
                             UnevenRoundedRectangle(
                                 bottomLeadingRadius: 30,
@@ -143,6 +140,18 @@ private struct TopDropPanel<Content: View>: View {
         .allowsHitTesting(isPresented)
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : QMotion.smooth, value: isPresented)
         .sensoryFeedback(.impact(weight: .light), trigger: isPresented)
+    }
+
+    /// Fixed height when a fraction is given; otherwise just as tall as the content.
+    @ViewBuilder
+    private func sized(_ view: Content, panelHeight: CGFloat?) -> some View {
+        if let panelHeight {
+            view.frame(height: panelHeight)
+        } else {
+            view
+                .padding(.bottom, 30)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var grabber: some View {

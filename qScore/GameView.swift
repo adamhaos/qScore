@@ -543,10 +543,7 @@ struct StandingsView: View {
                     Text("Standings")
                         .font(.title2.bold())
                         .foregroundStyle(QTheme.ink)
-                    Label(
-                        "Round \(game.roundNumber) of \(game.mode.rounds.count) · \(game.mode.title)",
-                        systemImage: game.mode.systemImage
-                    )
+                    Text("Round \(game.roundNumber) of \(game.mode.rounds.count) · \(game.mode.title)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
@@ -564,9 +561,10 @@ struct StandingsView: View {
             VStack(spacing: 0) {
                 ForEach(game.rankedPlayers) { player in
                     let rank = game.rank(of: player.id)
+                    let isLeader = hasClearLeader && rank == 1
                     HStack(spacing: 12) {
                         Group {
-                            if rank == 1 {
+                            if isLeader {
                                 Image(systemName: "crown.fill")
                                     .foregroundStyle(QTheme.gold)
                             } else {
@@ -577,8 +575,6 @@ struct StandingsView: View {
                         }
                         .frame(width: 28)
 
-                        Image(systemName: "person.crop.circle.fill")
-                            .foregroundStyle(QTheme.sage)
                         Text(player.name)
                             .font(.headline)
                             .foregroundStyle(QTheme.ink)
@@ -586,12 +582,12 @@ struct StandingsView: View {
                         Spacer()
                         Text("\(game.total(for: player.id))")
                             .font(.title3.monospacedDigit().bold())
-                            .foregroundStyle(rank == 1 ? QTheme.gold : QTheme.ink)
+                            .foregroundStyle(isLeader ? QTheme.gold : QTheme.ink)
                     }
                     .padding(.vertical, 10)
                     .padding(.horizontal, 10)
                     .background(
-                        rank == 1 ? QTheme.gold.opacity(0.12) : Color.clear,
+                        isLeader ? QTheme.gold.opacity(0.12) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                     )
                     if player.id != game.rankedPlayers.last?.id { Divider() }
@@ -601,6 +597,11 @@ struct StandingsView: View {
         }
         .padding(.horizontal)
         .padding(.top, 8)
+    }
+
+    /// Only crown someone once scores are in and one player is ahead.
+    private var hasClearLeader: Bool {
+        !game.scores.isEmpty && game.leaders.count == 1
     }
 }
 
