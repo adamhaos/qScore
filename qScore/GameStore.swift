@@ -47,7 +47,7 @@ final class GameStore {
         return game.id
     }
 
-    func submitRound(gameID: UUID, points: [UUID: Int], bonuses: RoundBonuses = RoundBonuses()) {
+    func submitRound(gameID: UUID, points: [UUID: Int], bonuses: RoundBonuses? = nil) {
         guard let gameIndex = games.firstIndex(where: { $0.id == gameID }),
               !games[gameIndex].isComplete,
               games[gameIndex].players.allSatisfy({ points[$0.id] != nil }) else { return }
@@ -65,7 +65,7 @@ final class GameStore {
         }
 
         games[gameIndex].roundDrafts?[roundIndex] = nil
-        setBonuses(bonuses, gameIndex: gameIndex, roundIndex: roundIndex)
+        setBonuses(bonuses ?? RoundBonuses(), gameIndex: gameIndex, roundIndex: roundIndex)
         if roundIndex == games[gameIndex].mode.rounds.count - 1 {
             games[gameIndex].completedAt = .now
         } else {
@@ -75,7 +75,7 @@ final class GameStore {
         persist()
     }
 
-    func updateRound(gameID: UUID, roundIndex: Int, points: [UUID: Int], bonuses: RoundBonuses = RoundBonuses()) {
+    func updateRound(gameID: UUID, roundIndex: Int, points: [UUID: Int], bonuses: RoundBonuses? = nil) {
         guard let gameIndex = games.firstIndex(where: { $0.id == gameID }),
               roundIndex >= 0,
               roundIndex <= games[gameIndex].currentRoundIndex,
@@ -96,7 +96,7 @@ final class GameStore {
         }
 
         games[gameIndex].roundDrafts?[roundIndex] = nil
-        setBonuses(bonuses, gameIndex: gameIndex, roundIndex: roundIndex)
+        setBonuses(bonuses ?? RoundBonuses(), gameIndex: gameIndex, roundIndex: roundIndex)
         games[gameIndex].updatedAt = .now
         persist()
     }
