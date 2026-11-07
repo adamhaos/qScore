@@ -2,51 +2,46 @@ import SwiftUI
 
 struct QuiddlerRulesView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onDone: (() -> Void)?
-    @State private var selectedPage = 1
+    @State private var currentPage = 0
+
+    private static let pageCount = 4
 
     init(onDone: (() -> Void)? = nil) {
         self.onDone = onDone
     }
 
     var body: some View {
-        ZStack {
-            QTheme.cream
-                .ignoresSafeArea()
+        VStack(spacing: 10) {
+            QuiddlerRulesHeader(onDone: close)
+                .padding(.horizontal)
 
-            VStack(spacing: 10) {
-                QuiddlerRulesHeader(onDone: close)
+            TabView(selection: $currentPage) {
+                QuiddlerBasicsPage()
+                    .padding(.horizontal)
+                    .tag(0)
+                QuiddlerWordsPage()
+                    .padding(.horizontal)
+                    .tag(1)
+                QuiddlerGoingOutPage()
+                    .padding(.horizontal)
+                    .tag(2)
+                QuiddlerScoringPage()
+                    .padding(.horizontal)
+                    .tag(3)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
 
-                TabView(selection: $selectedPage) {
-                    QuiddlerScoringPage().tag(0)
-                    QuiddlerBasicsPage().tag(1)
-                    QuiddlerWordsPage().tag(2)
-                    QuiddlerGoingOutPage().tag(3)
-                    QuiddlerScoringPage().tag(4)
-                    QuiddlerBasicsPage().tag(5)
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .onChange(of: selectedPage) {
-                    if selectedPage == 0 {
-                        resetPage(to: 4)
-                    } else if selectedPage == 5 {
-                        resetPage(to: 1)
-                    }
+            QuiddlerPageIndicator(pageCount: Self.pageCount, currentPage: currentPage) { page in
+                withAnimation(reduceMotion ? nil : QMotion.smooth) {
+                    currentPage = page
                 }
             }
-            .padding(.horizontal)
-            .padding(.top, 52)
+            .padding(.bottom, 26)
         }
-    }
-
-    private func resetPage(to page: Int) {
-        Task { @MainActor in
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                selectedPage = page
-            }
-        }
+        .padding(.top, 8)
+        .sensoryFeedback(.selection, trigger: currentPage)
     }
 
     private func close() {
@@ -55,6 +50,33 @@ struct QuiddlerRulesView: View {
         } else {
             dismiss()
         }
+    }
+}
+
+/// Four little bars under the rules. The current page's bar is wider and green.
+private struct QuiddlerPageIndicator: View {
+    let pageCount: Int
+    let currentPage: Int
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<pageCount, id: \.self) { page in
+                Button {
+                    onSelect(page)
+                } label: {
+                    Capsule()
+                        .fill(page == currentPage ? QTheme.sage : QTheme.ink.opacity(0.18))
+                        .frame(width: page == currentPage ? 28 : 14, height: 5)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Page \(page + 1) of \(pageCount)")
+                .accessibilityAddTraits(page == currentPage ? .isSelected : [])
+            }
+        }
+        .animation(QMotion.snappy, value: currentPage)
     }
 }
 
@@ -152,6 +174,14 @@ private struct QuiddlerWordsPage: View {
             .font(.body)
             .foregroundStyle(QTheme.ink)
             .fixedSize(horizontal: false, vertical: true)
+
+            Label(
+                "qScore’s word check uses the ENABLE word list, which leaves out names, abbreviations and slang.",
+                systemImage: "checkmark.seal.fill"
+            )
+            .font(.body)
+            .foregroundStyle(QTheme.ink)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -221,6 +251,14 @@ private struct QuiddlerRulePage<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
+        ScrollView {
+            pageContent
+        }
+        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private var pageContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
@@ -244,8 +282,8 @@ private struct QuiddlerRulePage<Content: View>: View {
             content
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.vertical, 4)
     }
 }
 
@@ -292,7 +330,6 @@ private struct QuiddlerIconRule: View {
 }
 
 #Preview {
-    NavigationStack {
-        QuiddlerRulesView()
-    }
+    QuiddlerRulesView()
+        .background(QTheme.cream)
 }

@@ -2,7 +2,6 @@ import SwiftUI
 
 struct HomeView: View {
     @Environment(GameStore.self) private var store
-    @State private var showingRules = false
     @State private var showingSetup = false
     @State private var gameToOpen: UUID?
 
@@ -26,13 +25,17 @@ struct HomeView: View {
                                                             systemImage: "trash",
                                                             role: .destructive
                                                         ) {
-                                                            withAnimation {
+                                                            withAnimation(QMotion.smooth) {
                                                                 store.deleteGame(withID: game.id)
                                                             }
                                                         }
                                                     }
                                             }
-                                            .buttonStyle(.plain)
+                                            .buttonStyle(.pressable(scale: 0.97))
+                                            .transition(.asymmetric(
+                                                insertion: .opacity.combined(with: .move(edge: .top)),
+                                                removal: .opacity.combined(with: .scale(scale: 0.9))
+                                            ))
                                         }
                                     }
                                     .padding(.vertical, 12)
@@ -70,12 +73,15 @@ struct HomeView: View {
                                         Button { store.path.append(.game(game.id)) } label: {
                                             RecentGameGridCard(game: game)
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(.pressable(scale: 0.96))
                                         .contextMenu {
                                             Button("Delete Game", systemImage: "trash", role: .destructive) {
-                                                store.deleteGame(withID: game.id)
+                                                withAnimation(QMotion.smooth) {
+                                                    store.deleteGame(withID: game.id)
+                                                }
                                             }
                                         }
+                                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
                                     }
                                 }
                             }
@@ -83,6 +89,8 @@ struct HomeView: View {
                         }
                         .padding(.vertical, 4)
                         .padding(.bottom, 44)
+                        .animation(QMotion.smooth, value: store.activeGames.map(\.id))
+                        .animation(QMotion.smooth, value: store.completedGames.map(\.id))
                     }
                     .layoutPriority(1)
                     .mask {
@@ -129,52 +137,19 @@ struct HomeView: View {
             }
         }
         .toolbar {
-            if !showingRules {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        withAnimation(.snappy) {
-                            showingRules = true
-                        }
-                    } label: {
-                        Label("Quiddler Rules", systemImage: "book.pages")
-                    }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    store.isShowingRules = true
+                } label: {
+                    Label("Rules", systemImage: "book.pages")
+                        .labelStyle(.titleAndIcon)
                 }
+                .accessibilityLabel("Quiddler Rules")
             }
         }
-        .overlay {
-            GeometryReader { geometry in
-                ZStack(alignment: .top) {
-                    if showingRules {
-                        Color.black.opacity(0.28)
-                            .ignoresSafeArea()
-                            .onTapGesture {
-                                withAnimation(.smooth(duration: 0.35)) {
-                                    showingRules = false
-                                }
-                            }
-                            .transition(.opacity)
-
-                        QuiddlerRulesView {
-                            withAnimation(.smooth(duration: 0.35)) {
-                                showingRules = false
-                            }
-                        }
-                        .frame(height: geometry.size.height * 0.72)
-                        .clipShape(
-                            UnevenRoundedRectangle(
-                                bottomLeadingRadius: 30,
-                                bottomTrailingRadius: 30,
-                                style: .continuous
-                            )
-                        )
-                        .shadow(color: .black.opacity(0.25), radius: 24, y: 12)
-                        .ignoresSafeArea(edges: .top)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    }
-                }
-                .animation(.smooth(duration: 0.35), value: showingRules)
-                .zIndex(1)
-            }
+        .sensoryFeedback(.impact(weight: .light), trigger: showingSetup) { _, isShowing in isShowing }
+        .sensoryFeedback(trigger: store.games.count) { oldCount, newCount in
+            newCount < oldCount ? SensoryFeedback.impact(weight: .medium) : nil
         }
         .sheet(isPresented: $showingSetup, onDismiss: openCreatedGame) {
             GameSetupView { gameID in
